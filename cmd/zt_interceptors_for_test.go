@@ -75,6 +75,7 @@ func (i *interceptor) reset() {
 // this lifecycle manager substitute does not perform any action
 type mockedLifecycleManager struct {
 	infoLog      chan string
+	warnLog      chan string
 	errorLog     chan string
 	progressLog  chan string
 	exitLog      chan string
@@ -105,9 +106,21 @@ func (m *mockedLifecycleManager) Info(msg string) {
 	default:
 	}
 }
+func (m *mockedLifecycleManager) Warn(msg string) {
+	select {
+	case m.warnLog <- msg:
+	default:
+	}
+}
 func (m *mockedLifecycleManager) Dryrun(o common.OutputBuilder) {
 	select {
 	case m.dryrunLog <- o(m.outputFormat):
+	default:
+	}
+}
+func (m *mockedLifecycleManager) Output(o common.OutputBuilder, e common.OutputMessageType) {
+	select {
+	case m.infoLog <- o(m.outputFormat):
 	default:
 	}
 }

@@ -1,6 +1,86 @@
 
 # Change Log
 
+## Version 10.25.1
+
+### Security fixes
+
+1. Updated Golang to 1.22.4 to address security vulnerabilities
+
+### Dependency updates
+
+1. Golang 1.22.3 -> 1.22.4
+2. azidentity 1.5.1 -> 1.6.0
+
+### Bug Fixes
+
+1. Fixed a regression in `list` where `--output-type=text` would not output any information
+2. Adjusted parsing of `AZCOPY_OAUTH_TOKEN_INFO` to support both enum names as a string and integers (for users that took dependency upon the accidental changes in 10.25)
+
+## Version 10.25.0
+
+### Security fixes
+
+1. Updated Golang version to 1.22.3 to address security vulnerabilities
+
+### New Features
+
+1. Workload Identity authentication is now available (#2619)
+2. `azcopy list` now supports a `--location` flag, to support ambiguous URIs (#2595)
+3. `azcopy list` now properly supports `--output-type=json` for users in automated scenarios. (#2629)
+
+### Bug Fixes
+
+1. Fixed a bug where AzCopy was not reporting performance info in `-output-type=json` (#2636)
+2. Fixed a bug AzCopy would crash when operating on extremely large (16.5+TB) managed disks (#2635)
+3. Fixed a bug with hash-based sync where the directory structure would not be replicated when using `--local-hash-storage-mode=HiddenFiles` with `--hash-meta-dir` (#2611)
+4. Fixed a bug where attempting to use a non-S3/GCP/Azure storage URI would result in treating the URI as a local path (#2652)
+
+### Documentation changes
+
+1. Updated inaccurate helptext and filled in missing helptext (#2649)
+2. Many important errors now include a link to relevant documentation to assist users in troubleshooting AzCopy (#2647)
+3. Ambiguous flags (such as `--cpk-by-value`) have improved clarity in documentation (#2615)
+4. A clearer error message is provided when failing a transfer due to authorization. (#2644)
+5. A special error has been created when performing an Azure Files to Azure Blob Storage transfer, indicating present lack of service-side support (#2616)
+
+## Version 10.25.0-Preview-1
+
+### Security fixes
+
+1. Updated version of GoLang used to 1.21 to address security vulnerabilities. 
+
+## Version 10.24.0
+
+### New Features
+
+1. Print summary logs at lower log levels and add BytesTransferred to the output in the `jobs show` command. ([#1319](https://github.com/Azure/azure-storage-azcopy/issues/1319))
+2. Added a flag `--put-blob-size-mb` to `copy`, `sync` and `bench` commands to specify the maximum size of a blob to be uploaded using PutBlob. ([#2561](https://github.com/Azure/azure-storage-azcopy/pull/2561))
+3. Added support for latest put blob service limits. Block blob put blob size can now be set up to 5000MB. ([#2569](https://github.com/Azure/azure-storage-azcopy/pull/2569))
+4. Updated all SDK dependencies to their latest version. ([#2599](https://github.com/Azure/azure-storage-azcopy/pull/2599))
+5. Updated summary logs to use consistent wording across all commands. ([#2602](https://github.com/Azure/azure-storage-azcopy/pull/2602))
+
+### Bug Fixes
+
+1. Fixed an issue where AzCopy would fail to auto login with the AZCOPY_AUTO_LOGIN_TYPE environment variable set to PSCRED on certain Linux and MacOS environments. ([#2491](https://github.com/Azure/azure-storage-azcopy/issues/2491))([#2555](https://github.com/Azure/azure-storage-azcopy/issues/2555))
+2. Fixed a bug where page blob download optimizer would behave incorrectly on highly fragemented blobs if the service times out. ([#2445](https://github.com/Azure/azure-storage-azcopy/issues/2445))
+3. Ignore 404 errors on retried deletes. ([#2554](https://github.com/Azure/azure-storage-azcopy/pull/2554))
+4. Fixed a bug where the `VersionID` property would not be honored on the `list` command. ([#2007](https://github.com/Azure/azure-storage-azcopy/issues/2007))
+5. Fixed a bug where ADLS Gen2 paths with encoded special characters would fail to transfer. ([#2549](https://github.com/Azure/azure-storage-azcopy/issues/2549))
+6. Fixed an issue where ACL copying would fail when specifying an ADLS Gen2 account with the blob endpoint. ([#2546](https://github.com/Azure/azure-storage-azcopy/issues/2546)) 
+7. Fixed an issue where the snapshot ID would not be preserved when testing which authentication type to use for managed disks. ([#2547](https://github.com/Azure/azure-storage-azcopy/issues/2547))
+8. Fixed an issue where `copy` would panic if a root directory is specified as the destination. ([#2036](https://github.com/Azure/azure-storage-azcopy/issues/2036))
+
+### Documentation
+
+1. Removed the azcopy login/logout deprecation notice. ([#2589](https://github.com/Azure/azure-storage-azcopy/pull/2589))
+2. Added a warning for customers using Shared Key for Azure Datalake transfers to indicate that Shared Key authentication will be deprecated and removed in a future release. ([#2569](https://github.com/Azure/azure-storage-azcopy/pull/2567))
+3. Updated the list help text to clearly indicate the services and authentication types supported.([#2563](https://github.com/Azure/azure-storage-azcopy/pull/2563))
+
+### Security fixes
+
+1. Updated dependencies to address security vulnerabilities.
+
 ## Version 10.23.0
 
 ### New Features

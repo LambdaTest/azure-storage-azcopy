@@ -223,16 +223,17 @@ func (t *blobTraverser) Traverse(preprocessor objectMorpher, processor objectPro
 			azcopyScanningLogger.Log(common.LogDebug, fmt.Sprintf("Root entity type: %s", getEntityType(blobProperties.Metadata)))
 		}
 
+		blobPropsAdapter := blobPropertiesResponseAdapter{blobProperties}
 		storedObject := newStoredObject(
 			preprocessor,
 			getObjectNameOnly(strings.TrimSuffix(blobURLParts.BlobName, common.AZCOPY_PATH_SEPARATOR_STRING)),
 			"",
-			getEntityType(blobProperties.Metadata),
-			*blobProperties.LastModified,
-			*blobProperties.ContentLength,
-			blobPropertiesResponseAdapter{blobProperties},
-			blobPropertiesResponseAdapter{blobProperties},
-			blobProperties.Metadata,
+			getEntityType(blobPropsAdapter.Metadata),
+			blobPropsAdapter.LastModified(),
+			blobPropsAdapter.ContentLength(),
+			blobPropsAdapter,
+			blobPropsAdapter,
+			blobPropsAdapter.Metadata,
 			blobURLParts.ContainerName,
 		)
 
@@ -256,8 +257,9 @@ func (t *blobTraverser) Traverse(preprocessor objectMorpher, processor objectPro
 		if !t.includeDeleted && (isBlob || err != nil) {
 			return err
 		}
-	} else if blobURLParts.BlobName == "" && t.preservePermissions.IsTruthy() {
-		// if the root is a container and we're copying "folders", we should persist the ACLs there too.
+	} else if blobURLParts.BlobName == "" && (t.preservePermissions.IsTruthy() || t.isDFS) {
+		// If the root is a container and we're copying "folders", we should persist the ACLs there too.
+		// For DFS, we should always include the container root.
 		if azcopyScanningLogger != nil {
 			azcopyScanningLogger.Log(common.LogDebug, "Detected the root as a container.")
 		}
@@ -339,6 +341,7 @@ func (t *blobTraverser) parallelList(containerClient *container.Client, containe
 						// try to get properties on the directory itself, since it's not listed in BlobItems
 						blobClient := containerClient.NewBlobClient(strings.TrimSuffix(*virtualDir.Name, common.AZCOPY_PATH_SEPARATOR_STRING))
 						pResp, err := blobClient.GetProperties(t.ctx, nil)
+						pbPropAdapter := blobPropertiesResponseAdapter{&pResp}
 						folderRelativePath := strings.TrimSuffix(*virtualDir.Name, common.AZCOPY_PATH_SEPARATOR_STRING)
 						folderRelativePath = strings.TrimPrefix(folderRelativePath, searchPrefix)
 						if err == nil {
@@ -347,11 +350,11 @@ func (t *blobTraverser) parallelList(containerClient *container.Client, containe
 								getObjectNameOnly(strings.TrimSuffix(*virtualDir.Name, common.AZCOPY_PATH_SEPARATOR_STRING)),
 								folderRelativePath,
 								common.EEntityType.Folder(),
-								*pResp.LastModified,
-								*pResp.ContentLength,
-								blobPropertiesResponseAdapter{&pResp},
-								blobPropertiesResponseAdapter{&pResp},
-								pResp.Metadata,
+								pbPropAdapter.LastModified(),
+								pbPropAdapter.ContentLength(),
+								pbPropAdapter,
+								pbPropAdapter,
+								pbPropAdapter.Metadata,
 								containerName,
 							)
 
@@ -465,8 +468,8 @@ func (t *blobTraverser) createStoredObjectForBlob(preprocessor objectMorpher, bl
 		getObjectNameOnly(*blobInfo.Name),
 		relativePath,
 		getEntityType(blobInfo.Metadata),
-		*blobInfo.Properties.LastModified,
-		*blobInfo.Properties.ContentLength,
+		adapter.LastModified(),
+		*adapter.BlobProperties.ContentLength,
 		adapter,
 		adapter, // adapter satisfies both interfaces
 		blobInfo.Metadata,
@@ -476,7 +479,7 @@ func (t *blobTraverser) createStoredObjectForBlob(preprocessor objectMorpher, bl
 	object.blobDeleted = common.IffNotNil(blobInfo.Deleted, false)
 	if t.includeDeleted && t.includeSnapshot {
 		object.blobSnapshotID = common.IffNotNil(blobInfo.Snapshot, "")
-	} else if t.includeDeleted && t.includeVersion && blobInfo.VersionID != nil {
+	} else if t.includeVersion && blobInfo.VersionID != nil {
 		object.blobVersionID = common.IffNotNil(blobInfo.VersionID, "")
 	}
 	return object

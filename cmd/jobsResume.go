@@ -162,14 +162,14 @@ Elapsed Time (Minutes): %v
 Number of File Transfers: %v
 Number of Folder Property Transfers: %v
 Number of Symlink Transfers: %v
-Total Number Of Transfers: %v
+Total Number of Transfers: %v
 Number of File Transfers Completed: %v
 Number of Folder Transfers Completed: %v
 Number of File Transfers Failed: %v
 Number of Folder Transfers Failed: %v
 Number of File Transfers Skipped: %v
 Number of Folder Transfers Skipped: %v
-TotalBytesTransferred: %v
+Total Number of Bytes Transferred: %v
 Final Job Status: %v
 `,
 					summary.JobID.String(),
@@ -249,8 +249,8 @@ type resumeCmdArgs struct {
 func (rca resumeCmdArgs) getSourceAndDestinationServiceClients(
 	ctx context.Context,
 	fromTo common.FromTo,
-	source string,
-	destination string,
+	source common.ResourceString,
+	destination common.ResourceString,
 ) (*common.ServiceClient, *common.ServiceClient, error) {
 	if len(rca.SourceSAS) > 0 && rca.SourceSAS[0] != '?' {
 		rca.SourceSAS = "?" + rca.SourceSAS
@@ -259,10 +259,12 @@ func (rca resumeCmdArgs) getSourceAndDestinationServiceClients(
 		rca.DestinationSAS = "?" + rca.DestinationSAS
 	}
 
+	source.SAS = rca.SourceSAS
+	destination.SAS = rca.DestinationSAS
+
 	srcCredType, _, err := getCredentialTypeForLocation(ctx,
 		fromTo.From(),
 		source,
-		rca.SourceSAS,
 		true,
 		common.CpkOptions{})
 	if err != nil {
@@ -272,7 +274,6 @@ func (rca resumeCmdArgs) getSourceAndDestinationServiceClients(
 	dstCredType, _, err := getCredentialTypeForLocation(ctx,
 		fromTo.To(),
 		destination,
-		rca.DestinationSAS,
 		false,
 		common.CpkOptions{})
 	if err != nil {
@@ -296,7 +297,7 @@ func (rca resumeCmdArgs) getSourceAndDestinationServiceClients(
 
 	options := createClientOptions(common.AzcopyCurrentJobLogger, nil)
 
-	srcServiceClient, err := common.GetServiceClientForLocation(fromTo.From(), source+rca.SourceSAS, srcCredType, tc, &options, nil)
+	srcServiceClient, err := common.GetServiceClientForLocation(fromTo.From(), source, srcCredType, tc, &options, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -306,7 +307,7 @@ func (rca resumeCmdArgs) getSourceAndDestinationServiceClients(
 		srcCred = common.NewScopedCredential(tc, srcCredType)
 	}
 	options = createClientOptions(common.AzcopyCurrentJobLogger, srcCred)
-	dstServiceClient, err := common.GetServiceClientForLocation(fromTo.To(), destination+rca.DestinationSAS, dstCredType, tc, &options, nil)
+	dstServiceClient, err := common.GetServiceClientForLocation(fromTo.To(), destination, dstCredType, tc, &options, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -376,23 +377,27 @@ func (rca resumeCmdArgs) process() error {
 	// Initialize credential info.
 	credentialInfo := common.CredentialInfo{}
 	// TODO: Replace context with root context
+	srcResourceString, err := SplitResourceString(getJobFromToResponse.Source, getJobFromToResponse.FromTo.From())
+	_ = err // todo
+	srcResourceString.SAS = rca.SourceSAS
+	dstResourceString, err := SplitResourceString(getJobFromToResponse.Destination, getJobFromToResponse.FromTo.To())
+	_ = err // todo
+	dstResourceString.SAS = rca.DestinationSAS
 
 	// we should stop using credentiaLInfo and use the clients instead. But before we fix
 	// that there will be repeated calls to get Credential type for correctness.
 	if credentialInfo.CredentialType, err = getCredentialType(ctx, rawFromToInfo{
-		fromTo:         getJobFromToResponse.FromTo,
-		source:         getJobFromToResponse.Source,
-		destination:    getJobFromToResponse.Destination,
-		sourceSAS:      rca.SourceSAS,
-		destinationSAS: rca.DestinationSAS,
+		fromTo:      getJobFromToResponse.FromTo,
+		source:      srcResourceString,
+		destination: dstResourceString,
 	}, common.CpkOptions{}); err != nil {
 		return err
 	}
 
 	srcServiceClient, dstServiceClient, err := rca.getSourceAndDestinationServiceClients(
 		ctx, getJobFromToResponse.FromTo,
-		getJobFromToResponse.Source,
-		getJobFromToResponse.Destination,
+		srcResourceString,
+		dstResourceString,
 	)
 	if err != nil {
 		return errors.New("could not create service clients " + err.Error())
