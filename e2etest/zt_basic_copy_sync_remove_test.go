@@ -22,14 +22,9 @@ package e2etest
 
 import (
 	"crypto/md5"
+	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
-	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
-	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
-	"github.com/Azure/azure-sdk-for-go/sdk/storage/azdatalake/datalakeerror"
-	"github.com/Azure/azure-storage-azcopy/v10/common"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -37,6 +32,14 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azdatalake/datalakeerror"
+	"github.com/Azure/azure-storage-azcopy/v10/common"
+	"github.com/stretchr/testify/assert"
 )
 
 // ================================  Copy And Sync: Upload, Download, and S2S  =========================================
@@ -860,6 +863,13 @@ func TestBasic_HashBasedSync_HashDir(t *testing.T) {
 				hashFile := filepath.Join(hashStorageDir, ".asdf.txt"+common.AzCopyHashDataStream)
 				_, err = os.Stat(hashFile)
 				a.AssertNoErr(err)
+
+				isHidden := osScenarioHelper{}.IsFileHidden(a, hashFile)
+				assert.True(t, isHidden, "The metadata file should be hidden")
+
+				originalFile := filepath.Join(dataPath, "asdf.txt")
+				isHidden = osScenarioHelper{}.IsFileHidden(a, originalFile)
+				assert.True(t, !isHidden, "The original file should not be hidden")
 			},
 		},
 		testFiles{
@@ -927,6 +937,7 @@ func TestBasic_SyncLMTSwitch_PreferServiceLMT(t *testing.T) {
 		anonymousAuthOnly,
 		params{
 			preserveSMBInfo: to.Ptr(false),
+			preserveInfo:    to.Ptr(false),
 		},
 		&hooks{
 			beforeRunJob: func(h hookHelper) {
@@ -1119,20 +1130,8 @@ func TestCopySync_DeleteDestinationFileFlag(t *testing.T) {
 		&hooks{
 			beforeRunJob: func(h hookHelper) {
 				blobClient := h.GetDestination().(*resourceBlobContainer).containerClient.NewBlockBlobClient("filea")
-				// initial stage block
-				id := []string{BlockIDIntToBase64(1)}
-				_, err := blobClient.StageBlock(ctx, id[0], streaming.NopCloser(strings.NewReader(blockBlobDefaultData)), nil)
-				if err != nil {
-					t.Errorf("error staging block %s", err)
-				}
-
-				_, err = blobClient.CommitBlockList(ctx, id, nil)
-				if err != nil {
-					t.Errorf("error committing block %s", err)
-				}
-
-				// second stage block
-				_, err = blobClient.StageBlock(ctx, id[0], streaming.NopCloser(strings.NewReader(blockBlobDefaultData)), nil)
+				// initial stage block, with block id incompatible with us
+				_, err := blobClient.StageBlock(ctx, base64.StdEncoding.EncodeToString([]byte("foobar")), streaming.NopCloser(strings.NewReader(blockBlobDefaultData)), nil)
 				if err != nil {
 					t.Errorf("error staging block %s", err)
 				}

@@ -11,6 +11,8 @@ type ResourceTracker interface {
 }
 
 func TrackResourceCreation(a Asserter, rm any) {
+	a.HelperMarker().Helper()
+
 	if t, ok := a.(ResourceTracker); ok {
 		if arm, ok := rm.(AccountResourceManager); ok {
 			t.TrackCreatedAccount(arm)
@@ -48,11 +50,6 @@ func CreateResource[T ResourceManager](a Asserter, base ResourceManager, def Mat
 
 		cmd.ELocationLevel.Object(): func(a Asserter, manager ResourceManager, definition ResourceDefinition) {
 			objDef := definition.(ResourceDefinitionObject)
-
-			if objDef.Body == nil {
-				objDef.Body = NewZeroObjectContentContainer(0)
-			}
-
 			manager.(ObjectResourceManager).Create(a, objDef.Body, objDef.ObjectProperties)
 		},
 	})

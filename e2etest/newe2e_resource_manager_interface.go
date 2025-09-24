@@ -1,6 +1,9 @@
 package e2etest
 
 import (
+	"io"
+	"time"
+
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/lease"
@@ -8,13 +11,14 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azfile/share"
 	"github.com/Azure/azure-storage-azcopy/v10/cmd"
 	"github.com/Azure/azure-storage-azcopy/v10/common"
-	"io"
-	"time"
 )
 
 type GetURIOptions struct {
 	RemoteOpts RemoteURIOpts
+	LocalOpts  LocalURIOpts
 	AzureOpts  AzureURIOpts
+	// The wildcard string to append to the end of a resource URI.
+	Wildcard string
 }
 
 type RemoteURIOpts struct {
@@ -27,6 +31,10 @@ type AzureURIOpts struct {
 	WithSAS bool
 	// Defaults to a resource-level specific minimally permissioned SAS token.
 	SASValues GenericSignatureValues
+}
+
+type LocalURIOpts struct {
+	PreferUNCPath bool
 }
 
 type ResourceManager interface {
@@ -76,7 +84,7 @@ func TryApplySpecificAuthType(rm ResourceManager, cred ExplicitCredentialTypes, 
 		return rrm.WithSpecificAuthType(cred, a, opts...)
 	}
 
-	return CreateAzCopyTarget(rm, EExplicitCredentialType.None(), a)
+	return CreateAzCopyTarget(rm, EExplicitCredentialType.None(), a, opts...)
 }
 
 // ExplicitCredentialTypes defines a more explicit enum for credential types as AzCopy's internal definition is very loose (e.g. Anonymous can be public or SAS); accepts the URI as-is.
@@ -258,9 +266,11 @@ type ObjectResourceManager interface {
 	SetObjectProperties(a Asserter, props ObjectProperties)
 
 	Download(a Asserter) io.ReadSeeker
+	ReadLink(a Asserter) string
 
 	// Exists determines if the object in question exists
 	Exists() bool
+	HardlinkedFileName() string
 }
 
 type ObjectProperties struct {
@@ -269,9 +279,13 @@ type ObjectProperties struct {
 	Metadata         common.Metadata
 	LastModifiedTime *time.Time
 
-	BlobProperties   BlobProperties
-	BlobFSProperties BlobFSProperties
-	FileProperties   FileProperties
+	BlobProperties     BlobProperties
+	BlobFSProperties   BlobFSProperties
+	FileProperties     FileProperties
+	FileNFSProperties  *FileNFSProperties
+	FileNFSPermissions *FileNFSPermissions
+	SymlinkedFileName  string
+	HardLinkedFileName string
 }
 
 type BlobProperties struct {
@@ -301,6 +315,18 @@ type FileProperties struct {
 	FileCreationTime  *time.Time
 	FileLastWriteTime *time.Time
 	FilePermissions   *string
+	LastModifiedTime  *time.Time
+}
+
+type FileNFSProperties struct {
+	FileCreationTime  *time.Time
+	FileLastWriteTime *time.Time
+}
+
+type FileNFSPermissions struct {
+	Owner    *string
+	Group    *string
+	FileMode *string
 }
 
 func (f FileProperties) hasCustomTimes() bool {

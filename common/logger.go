@@ -34,6 +34,24 @@ import (
 	sharefile "github.com/Azure/azure-sdk-for-go/sdk/storage/azfile/file"
 )
 
+var AzcopyCurrentJobLogger ILoggerResetable
+
+// TODO: (gapra) I think this should actually be a function on the logger?
+
+// LogToJobLogWithPrefix logs a message to the current job logger.
+// It applies a level-based prefix (e.g., "WARN:") for messages with a severity
+// level of LogWarning or higher. This helps distinguish warnings and errors
+// from informational messages in the logs.
+func LogToJobLogWithPrefix(msg string, level LogLevel) {
+	if AzcopyCurrentJobLogger != nil {
+		prefix := ""
+		if level <= LogWarning {
+			prefix = fmt.Sprintf("%s: ", level) // so readers can find serious ones, but information ones still look uncluttered without INFO:
+		}
+		AzcopyCurrentJobLogger.Log(level, prefix+msg)
+	}
+}
+
 type ILogger interface {
 	ShouldLog(level LogLevel) bool
 	Log(level LogLevel, msg string)
@@ -53,16 +71,34 @@ type ILoggerResetable interface {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+type LogLevelOverrideLogger struct {
+	ILoggerResetable
+	MinimumLevelToLog LogLevel
+}
+
+func (l LogLevelOverrideLogger) MinimumLogLevel() LogLevel {
+	return l.MinimumLevelToLog
+}
+
+func (l LogLevelOverrideLogger) ShouldLog(level LogLevel) bool {
+	if level == LogNone {
+		return false
+	}
+	return level <= l.MinimumLevelToLog
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 const maxLogSize = 500 * 1024 * 1024
 
 type jobLogger struct {
 	// maximum loglevel represents the maximum severity of log messages which can be logged to Job Log file.
 	// any message with severity higher than this will be ignored.
 	jobID             JobID
-	minimumLevelToLog LogLevel // The maximum customer-desired log level for this job
-	file              io.WriteCloser          // The job's log file
-	logFileFolder     string            // The log file's parent folder, needed for opening the file at the right place
-	logger            *log.Logger       // The Job's logger
+	minimumLevelToLog LogLevel       // The maximum customer-desired log level for this job
+	file              io.WriteCloser // The job's log file
+	logFileFolder     string         // The log file's parent folder, needed for opening the file at the right place
+	logger            *log.Logger    // The Job's logger
 	sanitizer         LogSanitizer
 	logFileNameSuffix string // Used to allow more than 1 log per job, ex: front-end and back-end logs should be separate
 }
@@ -88,7 +124,7 @@ func (jl *jobLogger) OpenLog() {
 	jl.file = file
 
 	flags := log.LstdFlags | log.LUTC
-	utcMessage := fmt.Sprintf("Log times are in UTC. Local time is " + time.Now().Format("2 Jan 2006 15:04:05"))
+	utcMessage := fmt.Sprintf("Log times are in UTC. Local time is %s", time.Now().Format("2 Jan 2006 15:04:05"))
 
 	jl.logger = log.New(jl.file, "", flags)
 	// Log the Azcopy Version
@@ -116,8 +152,7 @@ func (jl *jobLogger) CloseLog() {
 	}
 
 	jl.logger.Println("Closing Log")
-	err := jl.file.Close()
-	PanicIfErr(err)
+	_ = jl.file.Close() // If it was already closed, that's alright. We wanted to close it, anyway.
 }
 
 func (jl jobLogger) Log(loglevel LogLevel, msg string) {

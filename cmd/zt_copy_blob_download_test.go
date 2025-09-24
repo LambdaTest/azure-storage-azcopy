@@ -26,6 +26,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
+	"github.com/Azure/azure-storage-azcopy/v10/jobsAdmin"
 	"github.com/stretchr/testify/assert"
 	"os"
 	"path"
@@ -73,7 +74,9 @@ func TestInferredStripTopDirDownload(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedRPC.init()
 
 	// Test inference of striptopdir
@@ -178,7 +181,7 @@ func TestDownloadAccount(t *testing.T) {
 
 	// Traverse the account ahead of time and determine the relative paths for testing.
 	relPaths := make([]string, 0) // Use a map for easy lookup
-	blobTraverser := newBlobAccountTraverser(rawBSC, "", ctx, false, func(common.EntityType) {}, false, common.CpkOptions{}, common.EPreservePermissionsOption.None(), false, nil)
+	blobTraverser := newBlobAccountTraverser(rawBSC, "", ctx, InitResourceTraverserOptions{})
 	processor := func(object StoredObject) error {
 		// Skip non-file types
 		_, ok := object.Metadata[common.POSIXSymlinkMeta]
@@ -201,7 +204,9 @@ func TestDownloadAccount(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedRPC.init()
 
 	raw := getDefaultCopyRawInput(rawBSC.URL(), dstDirName)
@@ -233,7 +238,7 @@ func TestDownloadAccountWildcard(t *testing.T) {
 
 	// Traverse the account ahead of time and determine the relative paths for testing.
 	relPaths := make([]string, 0) // Use a map for easy lookup
-	blobTraverser := newBlobAccountTraverser(rawBSC, container, ctx, false, func(common.EntityType) {}, false, common.CpkOptions{}, common.EPreservePermissionsOption.None(), false, nil)
+	blobTraverser := newBlobAccountTraverser(rawBSC, container, ctx, InitResourceTraverserOptions{})
 	processor := func(object StoredObject) error {
 		// Skip non-file types
 		_, ok := object.Metadata[common.POSIXSymlinkMeta]
@@ -255,7 +260,9 @@ func TestDownloadAccountWildcard(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedRPC.init()
 
 	raw := getDefaultCopyRawInput(rawBSC.NewContainerClient(container).URL(), dstDirName)
@@ -289,7 +296,9 @@ func TestDownloadSingleBlobToFile(t *testing.T) {
 
 		// set up interceptor
 		mockedRPC := interceptor{}
-		Rpc = mockedRPC.intercept
+		jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+			return mockedRPC.intercept(order)
+		}
 		mockedRPC.init()
 
 		// construct the raw input to simulate user input
@@ -341,7 +350,9 @@ func TestDownloadBlobContainer(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedRPC.init()
 
 	// construct the raw input to simulate user input
@@ -388,7 +399,9 @@ func TestDownloadBlobVirtualDirectory(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedRPC.init()
 
 	// construct the raw input to simulate user input
@@ -443,7 +456,9 @@ func TestDownloadBlobContainerWithPattern(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedRPC.init()
 
 	// construct the raw input to simulate user input
@@ -502,7 +517,9 @@ func TestDownloadBlobContainerWithRegexInclude(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedRPC.init()
 
 	// construct the raw input to simulate user input
@@ -554,7 +571,9 @@ func TestDownloadBlobContainerWithMultRegexInclude(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedRPC.init()
 
 	// construct the raw input to simulate user input
@@ -604,7 +623,9 @@ func TestDownloadBlobContainerWithEmptyRegex(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedRPC.init()
 
 	// construct the raw input to simulate user input
@@ -649,7 +670,9 @@ func TestDownloadBlobContainerWithRegexExclude(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedRPC.init()
 
 	// construct the raw input to simulate user input
@@ -701,7 +724,9 @@ func TestDownloadBlobContainerWithMultRegexExclude(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedRPC.init()
 
 	// construct the raw input to simulate user input
@@ -749,7 +774,9 @@ func TestDryrunCopyLocalToBlob(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedLcm := mockedLifecycleManager{dryrunLog: make(chan string, 50)}
 	mockedLcm.SetOutputFormat(common.EOutputFormat.Text()) // text format
 	glcm = &mockedLcm
@@ -794,7 +821,9 @@ func TestDryrunCopyBlobToBlob(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedLcm := mockedLifecycleManager{dryrunLog: make(chan string, 50)}
 	mockedLcm.SetOutputFormat(common.EOutputFormat.Text()) // text format
 	glcm = &mockedLcm
@@ -839,7 +868,9 @@ func TestDryrunCopyBlobToBlobJson(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedLcm := mockedLifecycleManager{dryrunLog: make(chan string, 50)}
 	mockedLcm.SetOutputFormat(common.EOutputFormat.Json()) // json format
 	glcm = &mockedLcm
@@ -857,14 +888,17 @@ func TestDryrunCopyBlobToBlobJson(t *testing.T) {
 		a.Zero(len(mockedRPC.transfers))
 
 		msg := <-mockedLcm.dryrunLog
-		copyMessage := common.CopyTransfer{}
+		copyMessage := DryrunTransfer{}
 		errMarshal := json.Unmarshal([]byte(msg), &copyMessage)
 		a.Nil(errMarshal)
+
 		// comparing some values of copyMessage
-		a.Zero(strings.Compare(strings.Trim(copyMessage.Source, "/"), blobsToInclude[0]))
-		a.Zero(strings.Compare(strings.Trim(copyMessage.Destination, "/"), blobsToInclude[0]))
-		a.Zero(strings.Compare(copyMessage.EntityType.String(), common.EEntityType.File().String()))
-		a.Zero(strings.Compare(string(copyMessage.BlobType), "BlockBlob"))
+		srcRel := strings.TrimPrefix(copyMessage.Source, srcContainerClient.URL())
+		dstRel := strings.TrimPrefix(copyMessage.Destination, dstContainerClient.URL())
+		a.Equal(blobsToInclude[0], strings.Trim(srcRel, "/"))
+		a.Equal(blobsToInclude[0], strings.Trim(dstRel, "/"))
+		a.Equal(common.EEntityType.File(), copyMessage.EntityType)
+		a.Equal(common.EBlobType.BlockBlob(), copyMessage.BlobType)
 	})
 }
 
@@ -888,7 +922,9 @@ func TestDryrunCopyS3toBlob(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedLcm := mockedLifecycleManager{dryrunLog: make(chan string, 50)}
 	mockedLcm.SetOutputFormat(common.EOutputFormat.Text()) // text format
 	glcm = &mockedLcm
@@ -934,7 +970,9 @@ func TestDryrunCopyGCPtoBlob(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedLcm := mockedLifecycleManager{dryrunLog: make(chan string, 50)}
 	mockedLcm.SetOutputFormat(common.EOutputFormat.Text()) // text format
 	glcm = &mockedLcm
@@ -1017,7 +1055,9 @@ func TestListOfVersions(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedRPC.init()
 
 	// construct the raw input to simulate user input
@@ -1066,7 +1106,9 @@ func TestListOfVersionsNegative(t *testing.T) {
 
 	// set up interceptor
 	mockedRPC := interceptor{}
-	Rpc = mockedRPC.intercept
+	jobsAdmin.ExecuteNewCopyJobPartOrder = func(order common.CopyJobPartOrderRequest) common.CopyJobPartOrderResponse {
+		return mockedRPC.intercept(order)
+	}
 	mockedRPC.init()
 
 	// construct the raw input to simulate user input

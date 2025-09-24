@@ -50,9 +50,6 @@ type blobTraverser struct {
 	// cx should have the option to disable this optimization in the name of saving costs
 	parallelListing bool
 
-	// whether to include blobs that have metadata 'hdi_isfolder = true'
-	includeDirectoryStubs bool
-
 	// a generic function to notify that a new stored object has been enumerated
 	incrementEnumerationCounter enumerationCounterFunc
 
@@ -62,23 +59,39 @@ type blobTraverser struct {
 
 	preservePermissions common.PreservePermissionsOption
 
-	includeDeleted bool
-
-	includeSnapshot bool
-
-	includeVersion bool
+	include common.BlobTraverserIncludeOption
 
 	isDFS bool
 }
 
-func (t *blobTraverser) IsDirectory(isSource bool) (bool, error) {
+var NonErrorDirectoryStubOverlappable = errors.New("The directory stub exists, and can overlap.")
+
+func (t *blobTraverser) IsDirectory(isSource bool) (isDirectory bool, err error) {
 	isDirDirect := copyHandlerUtil{}.urlIsContainerOrVirtualDirectory(t.rawURL)
+
+	blobURLParts, err := blob.ParseURL(t.rawURL)
+	if err != nil {
+		return false, err
+	}
 
 	// Skip the single blob check if we're checking a destination.
 	// This is an individual exception for blob because blob supports virtual directories and blobs sharing the same name.
 	// On HNS accounts, we would still perform this test. The user may have provided directory name without path-separator
 	if isDirDirect { // a container or a path ending in '/' is always directory
-		return true, nil
+		if blobURLParts.ContainerName != "" && blobURLParts.BlobName == "" {
+			// If it's a container, let's ensure that container exists. Listing is a safe assumption to be valid, because how else would we enumerate?
+			containerClient := t.serviceClient.NewContainerClient(blobURLParts.ContainerName)
+			p := containerClient.NewListBlobsFlatPager(nil)
+			_, err = p.NextPage(t.ctx)
+
+			if bloberror.HasCode(err, bloberror.AuthorizationPermissionMismatch) {
+				// Maybe we don't have the ability to list? Can we get container properties as a fallback?
+				_, propErr := containerClient.GetProperties(t.ctx, nil)
+				err = common.Iff(propErr == nil, nil, err)
+			}
+		}
+
+		return true, err
 	}
 	if !isSource && !t.isDFS {
 		// destination on blob endpoint. If it does not end in '/' it is a file
@@ -86,8 +99,8 @@ func (t *blobTraverser) IsDirectory(isSource bool) (bool, error) {
 	}
 
 	// All sources and DFS-destinations we'll look further
-
-	_, _, isDirStub, blobErr := t.getPropertiesIfSingleBlob()
+	// This call is fine, because there is no trailing / here-- If there's a trailing /, this is surely referring
+	_, _, isDirStub, _, blobErr := t.getPropertiesIfSingleBlob()
 
 	// We know for sure this is a single blob still, let it walk on through to the traverser.
 	if bloberror.HasCode(blobErr, bloberror.BlobUsesCustomerSpecifiedEncryption) {
@@ -98,10 +111,6 @@ func (t *blobTraverser) IsDirectory(isSource bool) (bool, error) {
 		return isDirStub, nil
 	}
 
-	blobURLParts, err := blob.ParseURL(t.rawURL)
-	if err != nil {
-		return false, err
-	}
 	containerClient := t.serviceClient.NewContainerClient(blobURLParts.ContainerName)
 	searchPrefix := strings.TrimSuffix(blobURLParts.BlobName, common.AZCOPY_PATH_SEPARATOR_STRING) + common.AZCOPY_PATH_SEPARATOR_STRING
 	maxResults := int32(1)
@@ -116,47 +125,52 @@ func (t *blobTraverser) IsDirectory(isSource bool) (bool, error) {
 	}
 
 	if len(resp.Segment.BlobItems) == 0 {
-		// Not a directory
-		// If the blob is not found return the error to throw
-		if bloberror.HasCode(blobErr, bloberror.BlobNotFound) {
-			return false, errors.New(common.FILE_NOT_FOUND)
-		}
-		return false, blobErr
+		// Not a directory, but there was also no file on site. Therefore, there's nothing.
+		return false, errors.New(common.FILE_NOT_FOUND)
 	}
 
 	return true, nil
 }
 
-func (t *blobTraverser) getPropertiesIfSingleBlob() (response *blob.GetPropertiesResponse, isBlob bool, isDirStub bool, err error) {
+func (t *blobTraverser) getPropertiesIfSingleBlob() (response *blob.GetPropertiesResponse, isBlob bool, isDirStub bool, blobName string, err error) {
 	// trim away the trailing slash before we check whether it's a single blob
 	// so that we can detect the directory stub in case there is one
 	blobURLParts, err := blob.ParseURL(t.rawURL)
 	if err != nil {
-		return nil, false, false, err
+		return nil, false, false, "", err
 	}
-	blobURLParts.BlobName = strings.TrimSuffix(blobURLParts.BlobName, common.AZCOPY_PATH_SEPARATOR_STRING)
 
 	if blobURLParts.BlobName == "" {
 		// This is a container, which needs to be given a proper listing.
-		return nil, false, false, nil
+		return nil, false, false, "", nil
 	}
 
+	/*
+		If the user specified a trailing /, they may mean:
+		A) `folder/` with `hdi_isfolder`, this is intentional.
+		B) `folder` with `hdi_isfolder`
+		C) a virtual directory with children, but no stub
+	*/
+
+retry:
 	blobClient, err := createBlobClientFromServiceClient(blobURLParts, t.serviceClient)
 	if err != nil {
-		return nil, false, false, err
+		return nil, false, false, blobURLParts.BlobName, err
 	}
 	props, err := blobClient.GetProperties(t.ctx, &blob.GetPropertiesOptions{CPKInfo: t.cpkOptions.GetCPKInfo()})
 
-	// if there was no problem getting the properties, it means that we are looking at a single blob
-	if err == nil {
-		if gCopyUtil.doesBlobRepresentAFolder(props.Metadata) {
-			return &props, false, true, nil
-		}
-
-		return &props, true, false, err
+	if err != nil && strings.HasSuffix(blobURLParts.BlobName, common.AZCOPY_PATH_SEPARATOR_STRING) {
+		// Trim & retry, maybe the directory stub is DFS style.
+		blobURLParts.BlobName = strings.TrimSuffix(blobURLParts.BlobName, common.AZCOPY_PATH_SEPARATOR_STRING)
+		goto retry
+	} else if err == nil {
+		// We found the target blob, great! Let's return the details.
+		isDir := gCopyUtil.doesBlobRepresentAFolder(props.Metadata)
+		return &props, !isDir, isDir, blobURLParts.BlobName, nil
 	}
 
-	return nil, false, false, err
+	// We found nothing.
+	return nil, false, false, "", err
 }
 
 func (t *blobTraverser) getBlobTags() (common.BlobTags, error) {
@@ -190,7 +204,7 @@ func (t *blobTraverser) Traverse(preprocessor objectMorpher, processor objectPro
 	}
 
 	// check if the url points to a single blob
-	blobProperties, isBlob, isDirStub, err := t.getPropertiesIfSingleBlob()
+	blobProperties, isBlob, isDirStub, blobName, err := t.getPropertiesIfSingleBlob()
 
 	var respErr *azcore.ResponseError
 	if errors.As(err, &respErr) {
@@ -212,7 +226,7 @@ func (t *blobTraverser) Traverse(preprocessor objectMorpher, processor objectPro
 	//	2. either we are scanning recursively with includeDirectoryStubs set to true,
 	//	   then we add the stub blob that represents the directory
 	if (isBlob && !strings.HasSuffix(blobURLParts.BlobName, common.AZCOPY_PATH_SEPARATOR_STRING)) ||
-		(t.includeDirectoryStubs && isDirStub && t.recursive) {
+		(t.include.DirStubs() && isDirStub && t.recursive) {
 		// sanity checking so highlighting doesn't highlight things we're not worried about.
 		if blobProperties == nil {
 			panic("isBlob should never be set if getting properties is an error")
@@ -223,11 +237,16 @@ func (t *blobTraverser) Traverse(preprocessor objectMorpher, processor objectPro
 			azcopyScanningLogger.Log(common.LogDebug, fmt.Sprintf("Root entity type: %s", getEntityType(blobProperties.Metadata)))
 		}
 
+		relPath := ""
+		if strings.HasSuffix(blobName, "/") {
+			relPath = "\x00" // Because the ste will trim the / suffix from our source, or we may not already have it.
+		}
+
 		blobPropsAdapter := blobPropertiesResponseAdapter{blobProperties}
 		storedObject := newStoredObject(
 			preprocessor,
-			getObjectNameOnly(strings.TrimSuffix(blobURLParts.BlobName, common.AZCOPY_PATH_SEPARATOR_STRING)),
-			"",
+			getObjectNameOnly(blobName),
+			relPath,
 			getEntityType(blobPropsAdapter.Metadata),
 			blobPropsAdapter.LastModified(),
 			blobPropsAdapter.ContentLength(),
@@ -254,7 +273,7 @@ func (t *blobTraverser) Traverse(preprocessor objectMorpher, processor objectPro
 		_, err = getProcessingError(err)
 
 		// short-circuit if we don't have anything else to scan and permanent delete is not on
-		if !t.includeDeleted && (isBlob || err != nil) {
+		if !t.include.Deleted() && (isBlob || err != nil) {
 			return err
 		}
 	} else if blobURLParts.BlobName == "" && (t.preservePermissions.IsTruthy() || t.isDFS) {
@@ -298,7 +317,7 @@ func (t *blobTraverser) Traverse(preprocessor objectMorpher, processor objectPro
 
 	// append a slash if it is not already present
 	// example: foo/bar/bla becomes foo/bar/bla/ so that we only list children of the virtual directory
-	if searchPrefix != "" && !strings.HasSuffix(searchPrefix, common.AZCOPY_PATH_SEPARATOR_STRING) && !t.includeSnapshot && !t.includeDeleted {
+	if searchPrefix != "" && !strings.HasSuffix(searchPrefix, common.AZCOPY_PATH_SEPARATOR_STRING) && !t.include.Snapshots() && !t.include.Deleted() {
 		searchPrefix += common.AZCOPY_PATH_SEPARATOR_STRING
 	}
 
@@ -321,7 +340,7 @@ func (t *blobTraverser) parallelList(containerClient *container.Client, containe
 
 		pager := containerClient.NewListBlobsHierarchyPager("/", &container.ListBlobsHierarchyOptions{
 			Prefix:  &currentDirPath,
-			Include: container.ListBlobsInclude{Metadata: true, Tags: t.s2sPreserveSourceTags, Deleted: t.includeDeleted, Snapshots: t.includeSnapshot, Versions: t.includeVersion},
+			Include: container.ListBlobsInclude{Metadata: true, Tags: t.s2sPreserveSourceTags, Deleted: t.include.Deleted(), Snapshots: t.include.Snapshots(), Versions: t.include.Versions()},
 		})
 		var marker *string
 		for pager.More() {
@@ -337,17 +356,29 @@ func (t *blobTraverser) parallelList(containerClient *container.Client, containe
 						azcopyScanningLogger.Log(common.LogDebug, fmt.Sprintf("Enqueuing sub-directory %s for enumeration.", *virtualDir.Name))
 					}
 
-					if t.includeDirectoryStubs {
+					if t.include.DirStubs() {
 						// try to get properties on the directory itself, since it's not listed in BlobItems
-						blobClient := containerClient.NewBlobClient(strings.TrimSuffix(*virtualDir.Name, common.AZCOPY_PATH_SEPARATOR_STRING))
+						dName := strings.TrimSuffix(*virtualDir.Name, common.AZCOPY_PATH_SEPARATOR_STRING)
+						blobClient := containerClient.NewBlobClient(dName)
+					altNameCheck:
 						pResp, err := blobClient.GetProperties(t.ctx, nil)
-						pbPropAdapter := blobPropertiesResponseAdapter{&pResp}
-						folderRelativePath := strings.TrimSuffix(*virtualDir.Name, common.AZCOPY_PATH_SEPARATOR_STRING)
-						folderRelativePath = strings.TrimPrefix(folderRelativePath, searchPrefix)
 						if err == nil {
+							if !t.doesBlobRepresentAFolder(pResp.Metadata) { // We've picked up on a file *named* the folder, not the folder itself. Does folder/ exist?
+								if !strings.HasSuffix(dName, "/") {
+									blobClient = containerClient.NewBlobClient(dName + common.AZCOPY_PATH_SEPARATOR_STRING) // Tack on the path separator, check.
+									dName += common.AZCOPY_PATH_SEPARATOR_STRING
+									goto altNameCheck // "foo" is a file, what about "foo/"?
+								}
+
+								goto skipDirAdd // We shouldn't add a blob that isn't a folder as a folder. You either have the folder metadata, or you don't.
+							}
+
+							pbPropAdapter := blobPropertiesResponseAdapter{&pResp}
+							folderRelativePath := strings.TrimPrefix(dName, searchPrefix)
+
 							storedObject := newStoredObject(
 								preprocessor,
-								getObjectNameOnly(strings.TrimSuffix(*virtualDir.Name, common.AZCOPY_PATH_SEPARATOR_STRING)),
+								getObjectNameOnly(dName),
 								folderRelativePath,
 								common.EEntityType.Folder(),
 								pbPropAdapter.LastModified(),
@@ -371,7 +402,15 @@ func (t *blobTraverser) parallelList(containerClient *container.Client, containe
 							}
 
 							enqueueOutput(storedObject, err)
+						} else {
+							// There was nothing there, but is there folder/?
+							if !strings.HasSuffix(dName, "/") {
+								blobClient = containerClient.NewBlobClient(dName + common.AZCOPY_PATH_SEPARATOR_STRING) // Tack on the path separator, check.
+								dName += common.AZCOPY_PATH_SEPARATOR_STRING
+								goto altNameCheck // "foo" is a file, what about "foo/"?
+							}
 						}
+					skipDirAdd:
 					}
 				}
 			}
@@ -384,6 +423,11 @@ func (t *blobTraverser) parallelList(containerClient *container.Client, containe
 				}
 
 				storedObject := t.createStoredObjectForBlob(preprocessor, blobInfo, strings.TrimPrefix(*blobInfo.Name, searchPrefix), containerName)
+
+				// edge case, blob name happens to be the same as root and ends in /
+				if storedObject.relativePath == "" && strings.HasSuffix(storedObject.name, "/") {
+					storedObject.relativePath = "\x00" // Short circuit, letting the backend know we *really* meant root/.
+				}
 
 				if t.s2sPreserveSourceTags && blobInfo.BlobTags != nil {
 					blobTagsMap := common.BlobTags{}
@@ -477,9 +521,9 @@ func (t *blobTraverser) createStoredObjectForBlob(preprocessor objectMorpher, bl
 	)
 
 	object.blobDeleted = common.IffNotNil(blobInfo.Deleted, false)
-	if t.includeDeleted && t.includeSnapshot {
+	if t.include.Deleted() && t.include.Snapshots() {
 		object.blobSnapshotID = common.IffNotNil(blobInfo.Snapshot, "")
-	} else if t.includeVersion && blobInfo.VersionID != nil {
+	} else if t.include.Versions() && blobInfo.VersionID != nil {
 		object.blobVersionID = common.IffNotNil(blobInfo.VersionID, "")
 	}
 	return object
@@ -487,7 +531,7 @@ func (t *blobTraverser) createStoredObjectForBlob(preprocessor objectMorpher, bl
 
 func (t *blobTraverser) doesBlobRepresentAFolder(metadata map[string]*string) bool {
 	util := copyHandlerUtil{}
-	return util.doesBlobRepresentAFolder(metadata) && !(t.includeDirectoryStubs && t.recursive)
+	return util.doesBlobRepresentAFolder(metadata) // We should ignore these, because we pick them up in other ways.
 }
 
 func (t *blobTraverser) serialList(containerClient *container.Client, containerName string, searchPrefix string,
@@ -498,7 +542,7 @@ func (t *blobTraverser) serialList(containerClient *container.Client, containerN
 	prefix := searchPrefix + extraSearchPrefix
 	pager := containerClient.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{
 		Prefix:  &prefix,
-		Include: container.ListBlobsInclude{Metadata: true, Tags: t.s2sPreserveSourceTags, Deleted: t.includeDeleted, Snapshots: t.includeSnapshot, Versions: t.includeVersion},
+		Include: container.ListBlobsInclude{Metadata: true, Tags: t.s2sPreserveSourceTags, Deleted: t.include.Deleted(), Snapshots: t.include.Snapshots(), Versions: t.include.Versions()},
 	})
 	for pager.More() {
 		resp, err := pager.NextPage(t.ctx)
@@ -519,6 +563,11 @@ func (t *blobTraverser) serialList(containerClient *container.Client, containerN
 			}
 
 			storedObject := t.createStoredObjectForBlob(preprocessor, blobInfo, relativePath, containerName)
+
+			// edge case, blob name happens to be the same as root and ends in /
+			if storedObject.relativePath == "" && strings.HasSuffix(storedObject.name, "/") {
+				storedObject.relativePath = "\x00" // Short circuit, letting the backend know we *really* meant root/.
+			}
 
 			// Setting blob tags
 			if t.s2sPreserveSourceTags && blobInfo.BlobTags != nil {
@@ -544,28 +593,29 @@ func (t *blobTraverser) serialList(containerClient *container.Client, containerN
 	return nil
 }
 
-func newBlobTraverser(rawURL string, serviceClient *service.Client, ctx context.Context, recursive, includeDirectoryStubs bool, incrementEnumerationCounter enumerationCounterFunc, s2sPreserveSourceTags bool, cpkOptions common.CpkOptions, includeDeleted, includeSnapshot, includeVersion bool, preservePermissions common.PreservePermissionsOption, isDFS bool) (t *blobTraverser) {
+type BlobTraverserOptions struct {
+	isDFS *bool
+}
+
+func newBlobTraverser(rawURL string, serviceClient *service.Client, ctx context.Context, opts InitResourceTraverserOptions, blobOpts ...BlobTraverserOptions) (t *blobTraverser) {
 	t = &blobTraverser{
 		rawURL:                      rawURL,
 		serviceClient:               serviceClient,
 		ctx:                         ctx,
-		recursive:                   recursive,
-		includeDirectoryStubs:       includeDirectoryStubs,
-		incrementEnumerationCounter: incrementEnumerationCounter,
+		recursive:                   opts.Recursive,
+		include:                     common.EBlobTraverserIncludeOption.FromInputs(opts.PermanentDelete, opts.ListVersions, opts.IncludeDirectoryStubs),
+		incrementEnumerationCounter: opts.IncrementEnumeration,
 		parallelListing:             true,
-		s2sPreserveSourceTags:       s2sPreserveSourceTags,
-		cpkOptions:                  cpkOptions,
-		includeDeleted:              includeDeleted,
-		includeSnapshot:             includeSnapshot,
-		includeVersion:              includeVersion,
-		preservePermissions:         preservePermissions,
-		isDFS:                       isDFS,
+		s2sPreserveSourceTags:       opts.PreserveBlobTags,
+		cpkOptions:                  opts.CpkOptions,
+		preservePermissions:         opts.PreservePermissions,
+		isDFS:                       common.DerefOrZero(common.FirstOrZero(blobOpts).isDFS),
 	}
 
-	disableHierarchicalScanning := strings.ToLower(glcm.GetEnvironmentVariable(common.EEnvironmentVariable.DisableHierarchicalScanning()))
+	disableHierarchicalScanning := strings.ToLower(common.GetEnvironmentVariable(common.EEnvironmentVariable.DisableHierarchicalScanning()))
 
 	// disableHierarchicalScanning should be true for permanent delete
-	if (disableHierarchicalScanning == "false" || disableHierarchicalScanning == "") && includeDeleted && (includeSnapshot || includeVersion) {
+	if (disableHierarchicalScanning == "false" || disableHierarchicalScanning == "") && t.include.Deleted() && (t.include.Snapshots() || t.include.Versions()) {
 		t.parallelListing = false
 		fmt.Println("AZCOPY_DISABLE_HIERARCHICAL_SCAN has been set to true to permanently delete soft-deleted snapshots/versions.")
 	}

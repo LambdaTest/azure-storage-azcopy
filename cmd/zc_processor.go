@@ -23,10 +23,11 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/Azure/azure-storage-azcopy/v10/jobsAdmin"
 	"net/url"
-	"runtime"
 	"strings"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
+	"github.com/Azure/azure-storage-azcopy/v10/jobsAdmin"
 
 	"github.com/pkg/errors"
 
@@ -47,6 +48,7 @@ type copyTransferProcessor struct {
 	folderPropertiesOption common.FolderPropertyOption
 	symlinkHandlingType    common.SymlinkHandlingType
 	dryrunMode             bool
+	hardlinkHandlingType   common.HardlinkHandlingType
 }
 
 func newCopyTransferProcessor(copyJobTemplate *common.CopyJobPartOrderRequest, numOfTransfersPerPart int, source, destination common.ResourceString, reportFirstPartDispatched func(bool), reportFinalPartDispatched func(), preserveAccessTier, dryrunMode bool) *copyTransferProcessor {
@@ -64,19 +66,126 @@ func newCopyTransferProcessor(copyJobTemplate *common.CopyJobPartOrderRequest, n
 	}
 }
 
+type DryrunTransfer struct {
+	EntityType   common.EntityType
+	BlobType     common.BlobType
+	FromTo       common.FromTo
+	Source       string
+	Destination  string
+	SourceSize   *int64
+	HttpHeaders  blob.HTTPHeaders
+	Metadata     common.Metadata
+	BlobTier     *blob.AccessTier
+	BlobVersion  *string
+	BlobTags     common.BlobTags
+	BlobSnapshot *string
+}
+
+type dryrunTransferSurrogate struct {
+	EntityType         string
+	BlobType           string
+	FromTo             string
+	Source             string
+	Destination        string
+	SourceSize         int64           `json:"SourceSize,omitempty"`
+	ContentType        string          `json:"ContentType,omitempty"`
+	ContentEncoding    string          `json:"ContentEncoding,omitempty"`
+	ContentDisposition string          `json:"ContentDisposition,omitempty"`
+	ContentLanguage    string          `json:"ContentLanguage,omitempty"`
+	CacheControl       string          `json:"CacheControl,omitempty"`
+	ContentMD5         []byte          `json:"ContentMD5,omitempty"`
+	BlobTags           common.BlobTags `json:"BlobTags,omitempty"`
+	Metadata           common.Metadata `json:"Metadata,omitempty"`
+	BlobTier           blob.AccessTier `json:"BlobTier,omitempty"`
+	BlobVersion        string          `json:"BlobVersion,omitempty"`
+	BlobSnapshotID     string          `json:"BlobSnapshotID,omitempty"`
+}
+
+func (d *DryrunTransfer) UnmarshalJSON(bytes []byte) error {
+	var surrogate dryrunTransferSurrogate
+
+	err := json.Unmarshal(bytes, &surrogate)
+	if err != nil {
+		return fmt.Errorf("failed to parse dryrun transfer: %w", err)
+	}
+
+	err = d.FromTo.Parse(surrogate.FromTo)
+	if err != nil {
+		return fmt.Errorf("failed to parse fromto: %w", err)
+	}
+
+	err = d.EntityType.Parse(surrogate.EntityType)
+	if err != nil {
+		return fmt.Errorf("failed to parse entity type: %w", err)
+	}
+
+	err = d.BlobType.Parse(surrogate.BlobType)
+	if err != nil {
+		return fmt.Errorf("failed to parse entity type: %w", err)
+	}
+
+	d.Source = surrogate.Source
+	d.Destination = surrogate.Destination
+
+	d.SourceSize = &surrogate.SourceSize
+	d.HttpHeaders.BlobContentType = &surrogate.ContentType
+	d.HttpHeaders.BlobContentEncoding = &surrogate.ContentEncoding
+	d.HttpHeaders.BlobCacheControl = &surrogate.CacheControl
+	d.HttpHeaders.BlobContentDisposition = &surrogate.ContentDisposition
+	d.HttpHeaders.BlobContentLanguage = &surrogate.ContentLanguage
+	d.HttpHeaders.BlobContentMD5 = surrogate.ContentMD5
+	d.BlobTags = surrogate.BlobTags
+	d.Metadata = surrogate.Metadata
+	d.BlobTier = &surrogate.BlobTier
+	d.BlobVersion = &surrogate.BlobVersion
+	d.BlobSnapshot = &surrogate.BlobSnapshotID
+
+	return nil
+}
+
+func (d DryrunTransfer) MarshalJSON() ([]byte, error) {
+	surrogate := dryrunTransferSurrogate{
+		d.EntityType.String(),
+		d.BlobType.String(),
+		d.FromTo.String(),
+		d.Source,
+		d.Destination,
+		common.IffNotNil(d.SourceSize, 0),
+		common.IffNotNil(d.HttpHeaders.BlobContentType, ""),
+		common.IffNotNil(d.HttpHeaders.BlobContentEncoding, ""),
+		common.IffNotNil(d.HttpHeaders.BlobContentDisposition, ""),
+		common.IffNotNil(d.HttpHeaders.BlobContentLanguage, ""),
+		common.IffNotNil(d.HttpHeaders.BlobCacheControl, ""),
+		d.HttpHeaders.BlobContentMD5,
+		d.BlobTags,
+		d.Metadata,
+		common.IffNotNil(d.BlobTier, ""),
+		common.IffNotNil(d.BlobVersion, ""),
+		common.IffNotNil(d.BlobSnapshot, ""),
+	}
+
+	return json.Marshal(surrogate)
+}
+
 func (s *copyTransferProcessor) scheduleCopyTransfer(storedObject StoredObject) (err error) {
 
 	// Escape paths on destinations where the characters are invalid
 	// And re-encode them where the characters are valid.
-	srcRelativePath := pathEncodeRules(storedObject.relativePath, s.copyJobTemplate.FromTo, false, true)
-	dstRelativePath := pathEncodeRules(storedObject.relativePath, s.copyJobTemplate.FromTo, false, false)
-	if srcRelativePath != "" {
-		srcRelativePath = "/" + srcRelativePath
+	var srcRelativePath, dstRelativePath string
+	if storedObject.relativePath == "\x00" { // Short circuit when we're talking about root/, because the STE is funky about this.
+		srcRelativePath, dstRelativePath = storedObject.relativePath, storedObject.relativePath
+	} else {
+		srcRelativePath = pathEncodeRules(storedObject.relativePath, s.copyJobTemplate.FromTo, false, true)
+		dstRelativePath = pathEncodeRules(storedObject.relativePath, s.copyJobTemplate.FromTo, false, false)
+		if srcRelativePath != "" {
+			srcRelativePath = "/" + srcRelativePath
+		}
+		if dstRelativePath != "" {
+			dstRelativePath = "/" + dstRelativePath
+		}
 	}
-	if dstRelativePath != "" {
-		dstRelativePath = "/" + dstRelativePath
-	}
-	copyTransfer, shouldSendToSte := storedObject.ToNewCopyTransfer(false, srcRelativePath, dstRelativePath, s.preserveAccessTier, s.folderPropertiesOption, s.symlinkHandlingType)
+
+	copyTransfer, shouldSendToSte := storedObject.ToNewCopyTransfer(false, srcRelativePath, dstRelativePath, s.preserveAccessTier, s.folderPropertiesOption, s.symlinkHandlingType, s.hardlinkHandlingType)
 
 	if s.copyJobTemplate.FromTo.To() == common.ELocation.None() {
 		copyTransfer.BlobTier = s.copyJobTemplate.BlobAttributes.BlockBlobTier.ToAccessTierType()
@@ -100,55 +209,66 @@ func (s *copyTransferProcessor) scheduleCopyTransfer(storedObject StoredObject) 
 
 	if s.dryrunMode {
 		glcm.Dryrun(func(format common.OutputFormat) string {
+			prettySrcRelativePath, prettyDstRelativePath := srcRelativePath, dstRelativePath
+
+			fromTo := s.copyJobTemplate.FromTo
+			if fromTo.From().IsRemote() {
+				prettySrcRelativePath, err = url.PathUnescape(prettySrcRelativePath)
+				if err != nil {
+					prettySrcRelativePath = srcRelativePath // Fall back, because it's better than failing.
+				}
+			}
+
+			if fromTo.To().IsRemote() {
+				prettyDstRelativePath, err = url.PathUnescape(prettyDstRelativePath)
+				if err != nil {
+					prettyDstRelativePath = dstRelativePath // Fall back, because it's better than failing.
+				}
+			}
+
 			if format == common.EOutputFormat.Json() {
-				jsonOutput, err := json.Marshal(copyTransfer)
+				tx := DryrunTransfer{
+					EntityType:  storedObject.entityType,
+					BlobType:    common.FromBlobType(storedObject.blobType),
+					FromTo:      s.copyJobTemplate.FromTo,
+					Source:      common.GenerateFullPath(s.copyJobTemplate.SourceRoot.Value, prettySrcRelativePath),
+					Destination: "",
+					SourceSize:  &storedObject.size,
+					HttpHeaders: blob.HTTPHeaders{
+						BlobCacheControl:       &storedObject.cacheControl,
+						BlobContentDisposition: &storedObject.contentDisposition,
+						BlobContentEncoding:    &storedObject.contentEncoding,
+						BlobContentLanguage:    &storedObject.contentLanguage,
+						BlobContentMD5:         storedObject.md5,
+						BlobContentType:        &storedObject.contentType,
+					},
+					Metadata:     storedObject.Metadata,
+					BlobTier:     &storedObject.blobAccessTier,
+					BlobVersion:  &storedObject.blobVersionID,
+					BlobTags:     storedObject.blobTags,
+					BlobSnapshot: &storedObject.blobSnapshotID,
+				}
+
+				if fromTo.To() != common.ELocation.None() && fromTo.To() != common.ELocation.Unknown() {
+					tx.Destination = common.GenerateFullPath(s.copyJobTemplate.DestinationRoot.Value, prettyDstRelativePath)
+				}
+
+				jsonOutput, err := json.Marshal(tx)
 				common.PanicIfErr(err)
 				return string(jsonOutput)
 			} else {
-				prettySrcRelativePath, err := url.QueryUnescape(srcRelativePath)
-				common.PanicIfErr(err)
-				prettyDstRelativePath, err := url.QueryUnescape(dstRelativePath)
-				common.PanicIfErr(err)
-
 				// if remove then To() will equal to common.ELocation.Unknown()
 				if s.copyJobTemplate.FromTo.To() == common.ELocation.Unknown() { // remove
-					return fmt.Sprintf("DRYRUN: remove %v/%v",
-						s.copyJobTemplate.SourceRoot.Value,
-						prettySrcRelativePath)
+					return fmt.Sprintf("DRYRUN: remove %v",
+						common.GenerateFullPath(s.copyJobTemplate.SourceRoot.Value, prettySrcRelativePath))
 				}
 				if s.copyJobTemplate.FromTo.To() == common.ELocation.None() { // set-properties
-					return fmt.Sprintf("DRYRUN: set-properties %v/%v",
-						s.copyJobTemplate.SourceRoot.Value,
-						prettySrcRelativePath)
+					return fmt.Sprintf("DRYRUN: set-properties %v",
+						common.GenerateFullPath(s.copyJobTemplate.SourceRoot.Value, prettySrcRelativePath))
 				} else { // copy for sync
-					if s.copyJobTemplate.FromTo.From() == common.ELocation.Local() {
-						// formatting from local source
-						dryrunValue := fmt.Sprintf("DRYRUN: copy %v", common.ToShortPath(s.copyJobTemplate.SourceRoot.Value))
-						if runtime.GOOS == "windows" {
-							dryrunValue += "\\" + strings.ReplaceAll(prettySrcRelativePath, "/", "\\")
-						} else { // linux and mac
-							dryrunValue += "/" + prettySrcRelativePath
-						}
-						dryrunValue += fmt.Sprintf(" to %v/%v", strings.Trim(s.copyJobTemplate.DestinationRoot.Value, "/"), prettyDstRelativePath)
-						return dryrunValue
-					} else if s.copyJobTemplate.FromTo.To() == common.ELocation.Local() {
-						// formatting to local source
-						dryrunValue := fmt.Sprintf("DRYRUN: copy %v/%v to %v",
-							strings.Trim(s.copyJobTemplate.SourceRoot.Value, "/"), prettySrcRelativePath,
-							common.ToShortPath(s.copyJobTemplate.DestinationRoot.Value))
-						if runtime.GOOS == "windows" {
-							dryrunValue += "\\" + strings.ReplaceAll(prettyDstRelativePath, "/", "\\")
-						} else { // linux and mac
-							dryrunValue += "/" + prettyDstRelativePath
-						}
-						return dryrunValue
-					} else {
-						return fmt.Sprintf("DRYRUN: copy %v/%v to %v/%v",
-							s.copyJobTemplate.SourceRoot.Value,
-							prettySrcRelativePath,
-							s.copyJobTemplate.DestinationRoot.Value,
-							prettyDstRelativePath)
-					}
+					return fmt.Sprintf("DRYRUN: copy %v to %v",
+						common.GenerateFullPath(s.copyJobTemplate.SourceRoot.Value, prettySrcRelativePath),
+						common.GenerateFullPath(s.copyJobTemplate.DestinationRoot.Value, prettyDstRelativePath))
 				}
 			}
 		})
@@ -180,6 +300,8 @@ func (s *copyTransferProcessor) scheduleCopyTransfer(storedObject StoredObject) 
 		s.copyJobTemplate.Transfers.FolderTransferCount++
 	case common.EEntityType.Symlink():
 		s.copyJobTemplate.Transfers.SymlinkTransferCount++
+	case common.EEntityType.Hardlink():
+		s.copyJobTemplate.Transfers.HardlinksConvertedCount++
 	}
 
 	return nil
@@ -202,9 +324,7 @@ func (s *copyTransferProcessor) dispatchFinalPart() (copyJobInitiated bool, err 
 			s.copyJobTemplate.JobID, s.copyJobTemplate.PartNum, resp.ErrorMsg)
 	}
 
-	if jobsAdmin.JobsAdmin != nil {
-		jobsAdmin.JobsAdmin.LogToJobLog(FinalPartCreatedMessage, common.LogInfo)
-	}
+	common.LogToJobLogWithPrefix(FinalPartCreatedMessage, common.LogInfo)
 
 	if s.reportFinalPartDispatched != nil {
 		s.reportFinalPartDispatched()
@@ -214,8 +334,7 @@ func (s *copyTransferProcessor) dispatchFinalPart() (copyJobInitiated bool, err 
 
 // only test the response on the final dispatch to help diagnose root cause of test failures from 0 transfers
 func (s *copyTransferProcessor) sendPartToSte() common.CopyJobPartOrderResponse {
-	var resp common.CopyJobPartOrderResponse
-	Rpc(common.ERpcCmd.CopyJobPartOrder(), s.copyJobTemplate, &resp)
+	resp := jobsAdmin.ExecuteNewCopyJobPartOrder(*s.copyJobTemplate)
 
 	// if the current part order sent to ste is 0, then alert the progress reporting routine
 	if s.copyJobTemplate.PartNum == 0 && s.reportFirstPartDispatched != nil {
