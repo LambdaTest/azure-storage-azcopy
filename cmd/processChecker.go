@@ -2,13 +2,14 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/Azure/azure-storage-azcopy/v10/common"
 	"os"
 	"path"
 	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/Azure/azure-storage-azcopy/v10/common"
 )
 
 // isProcessRunning checks if a process with the given PID is running.
@@ -104,21 +105,21 @@ func WarnMultipleProcesses(directory string, currentPid int) {
 		return
 	}
 
-	f, err := os.Open(pidsSubDir)
-	if err != nil {
-		common.AzcopyCurrentJobLogger.Log(common.LogInfo,
-			fmt.Sprintf("Azcopy could not open pids sub dir located in the app dir. It is used for tracking running jobs. "+
-				"Azcopy will create them as needed. Details: %s"+
-				"\n The current job will continue as normal.", err.Error()))
-		return
-	}
-	defer f.Close()
+	// f, err := os.Open(pidsSubDir)
+	// if err != nil {
+	// 	common.AzcopyCurrentJobLogger.Log(common.LogInfo,
+	// 		fmt.Sprintf("Azcopy could not open pids sub dir located in the app dir. It is used for tracking running jobs. "+
+	// 			"Azcopy will create them as needed. Details: %s"+
+	// 			"\n The current job will continue as normal.", err.Error()))
+	// 	return
+	// }
+	// defer f.Close()
 
-	// Check if there is more than one pid file
-	_, err = f.Readdirnames(1)
-	if err == nil { // nil check works here, there will be EOF err if only one file
-		glcm.Info(common.WARN_MULTIPLE_PROCESSES)
-	}
+	// // Check if there is more than one pid file
+	// _, err = f.Readdirnames(1)
+	// if err == nil { // nil check works here, there will be EOF err if only one file
+	// 	glcm.Info(common.WARN_MULTIPLE_PROCESSES)
+	// }
 	pidFilePath := path.Join(pidsSubDir, currPidFileName) // E.g "\.azcopy\pids\\XXX.pid"
 	// Creates .pid file with specific pid
 	pidFile, err := os.OpenFile(pidFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
