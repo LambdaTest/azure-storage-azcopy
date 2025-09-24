@@ -7,7 +7,7 @@ import (
 )
 
 func init() {
-	suiteManager.RegisterSuite(&WorkloadIdentitySuite{})
+	suiteManager.RegisterEarlyRunSuite(&WorkloadIdentitySuite{})
 }
 
 type WorkloadIdentitySuite struct{}
@@ -15,7 +15,7 @@ type WorkloadIdentitySuite struct{}
 // Run only in environments that support and are set up for Workload Identity (ex: Azure Pipeline, Azure Kubernetes Service)
 func (s *WorkloadIdentitySuite) Scenario_SingleFileUploadDownloadWorkloadIdentity(svm *ScenarioVariationManager) {
 	// Run only in environments that support and are set up for Workload Identity (ex: Azure Pipeline, Azure Kubernetes Service)
-	if os.Getenv("NEW_E2E_ENVIRONMENT") != "AzurePipeline" {
+	if os.Getenv("NEW_E2E_ENVIRONMENT") != "TestEnvironmentAzurePipelines" {
 		svm.Skip("Workload Identity is only supported in environments specifically set up for it.")
 	}
 	azCopyVerb := ResolveVariation(svm, []AzCopyVerb{AzCopyVerbCopy, AzCopyVerbSync}) // Calculate verb early to create the destination object early
@@ -31,7 +31,7 @@ func (s *WorkloadIdentitySuite) Scenario_SingleFileUploadDownloadWorkloadIdentit
 		}
 	}
 
-	body := NewRandomObjectContentContainer(svm, SizeFromString("10K"))
+	body := NewRandomObjectContentContainer(SizeFromString("10K"))
 	// Scale up from service to object
 	srcObj := CreateResource[ObjectResourceManager](svm, GetRootResource(svm, ResolveVariation(svm, []common.Location{common.ELocation.Local(), common.ELocation.Blob()})), ResourceDefinitionObject{
 		ObjectName: pointerTo("test"),
@@ -59,8 +59,7 @@ func (s *WorkloadIdentitySuite) Scenario_SingleFileUploadDownloadWorkloadIdentit
 				},
 			},
 			Environment: &AzCopyEnvironment{
-				AutoLoginMode:      pointerTo(common.EAutoLoginType.Workload().String()),
-				InheritEnvironment: true,
+				AutoLoginMode: pointerTo(common.EAutoLoginType.Workload().String()),
 			},
 		})
 

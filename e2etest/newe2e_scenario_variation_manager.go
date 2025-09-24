@@ -1,16 +1,26 @@
 package e2etest
 
 import (
+	"context"
+	"errors"
 	"fmt"
+
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
+
+	"github.com/Azure/azure-storage-azcopy/v10/common"
+	"github.com/google/uuid"
 )
 
 // ScenarioVariationManager manages one specific variation of a scenario.
 type ScenarioVariationManager struct {
 	// t is intentionally nil during dryruns.
 	t *testing.T
+
+	// runNow disables parallelism in testing, instead running all tests immediately, intended for run-first suites.
+	runNow bool
 
 	// isInvalid is synonymous with Failed. It serves two purposes:
 	// 1. Invalidating dry-runs that would under no deterministic circumstances succeed.
@@ -32,9 +42,40 @@ type ScenarioVariationManager struct {
 	Parent *ScenarioManager
 	// VariationData is a mapping of IDs to values, in order.
 	VariationData *VariationDataContainer // todo call order, prepared options
+	VariationUUID uuid.UUID
 
 	// wetrun data
+	RunContext       context.Context
 	CreatedResources *PathTrie[createdResource]
+	CleanupFuncs     []func(a Asserter)
+}
+
+func (svm *ScenarioVariationManager) GetTestName() string {
+	if svm.t != nil {
+		return svm.t.Name()
+	} else {
+		return svm.Parent.testingT.Name() + "/" + svm.VariationName()
+	}
+}
+
+func (svm *ScenarioVariationManager) Context() context.Context {
+	if svm.RunContext == nil {
+		return context.Background()
+	}
+
+	return svm.RunContext
+}
+
+func (svm *ScenarioVariationManager) SetContext(ctx context.Context) {
+	svm.RunContext = ctx
+}
+
+func (svm *ScenarioVariationManager) UUID() uuid.UUID {
+	if svm.VariationUUID == uuid.Nil { // ensure we aren't handing back something empty
+		svm.VariationUUID = uuid.New()
+	}
+
+	return svm.VariationUUID
 }
 
 type createdResource struct {
@@ -66,6 +107,7 @@ func (svm *ScenarioVariationManager) DeleteCreatedResources() {
 
 	type deletable interface {
 		Delete(a Asserter)
+		EntityType() common.EntityType
 	}
 
 	svm.CreatedResources.Traverse(func(data *createdResource) TraversalOperation {
@@ -74,10 +116,9 @@ func (svm *ScenarioVariationManager) DeleteCreatedResources() {
 		} else if data.res != nil {
 			del, isDeletable := data.res.(deletable)
 
-			if !isDeletable {
+			if !isDeletable || del.EntityType() == common.EEntityType.Folder() {
 				return TraversalOperationContinue
 			}
-
 			del.Delete(svm)
 		}
 
@@ -103,6 +144,8 @@ func (svm *ScenarioVariationManager) NoError(comment string, err error, failNow 
 
 		if failFast {
 			svm.t.FailNow()
+		} else {
+			svm.t.Fail()
 		}
 	}
 }
@@ -191,9 +234,10 @@ func (svm *ScenarioVariationManager) HelperMarker() HelperMarker {
 // =========== Variation Handling ==========
 
 var variationExcludedCallers = map[string]bool{
-	"GetVariation":         true,
-	"ResolveVariation":     true,
-	"GetVariationCallerID": true,
+	"GetVariation":          true,
+	"ResolveVariation":      true,
+	"GetVariationCallerID":  true,
+	"NamedResolveVariation": true,
 }
 
 func (svm *ScenarioVariationManager) VariationName() string {
@@ -318,16 +362,13 @@ func (svm *ScenarioVariationManager) InvalidateScenario() {
 	svm.isInvalid = true
 }
 
-func (svm *ScenarioVariationManager) Cleanup(cleanupFunc func(a ScenarioAsserter)) {
+func (svm *ScenarioVariationManager) Cleanup(cleanupFunc CleanupFunc) {
 	if svm.Dryrun() {
 		svm.Error("Sanity check: svm.Cleanup should not be called during a dry run. No real actions should be taken during a dry run.")
 		return
 	}
 
-	//svm.CleanupFuncs = append(svm.CleanupFuncs, cleanupFunc)
-	svm.t.Cleanup(func() {
-		cleanupFunc(svm)
-	})
+	svm.CleanupFuncs = append(svm.CleanupFuncs, cleanupFunc)
 }
 
 // ResolveVariation wraps ScenarioVariationManager.GetVariation, returning the variation as the user's requested type, and using the call stack as the ID
@@ -339,4 +380,110 @@ func ResolveVariation[T any](svm *ScenarioVariationManager, options []T) T {
 // ResolveVariationByID is the same as ResolveVariation, but it's based upon the supplied ID rather than the call stack.
 func ResolveVariationByID[T any](svm *ScenarioVariationManager, ID string, options []any) T {
 	return GetTypeOrZero[T](svm.GetVariation(ID, ListOfAny(options)))
+}
+
+// NamedResolveVariation is similar to ResolveVariation, but instead resolves over the keys in options, and hands back T.
+func NamedResolveVariation[T any](svm *ScenarioVariationManager, options map[string]T) T {
+	variation := GetTypeOrZero[string](svm.GetVariation(svm.GetVariationCallerID(), AnyKeys(options)))
+
+	return options[variation]
+}
+
+var CleanupStepEarlyExit = errors.New("cleanupEarlyExit")
+
+type ScenarioVariationManagerCleanupAsserter struct {
+	svm *ScenarioVariationManager
+}
+
+func (s *ScenarioVariationManagerCleanupAsserter) GetTestName() string {
+	return s.svm.GetTestName()
+}
+
+func (s *ScenarioVariationManagerCleanupAsserter) WrapCleanup(cf CleanupFunc) {
+	defer func() {
+		if err := recover(); err != nil {
+			if err == CleanupStepEarlyExit {
+				return
+			}
+
+			stackTrace := debug.Stack()
+
+			s.Log("Cleanup step panicked: %v\n%s", err, string(stackTrace))
+		}
+	}()
+
+	cf(s)
+}
+
+func (s *ScenarioVariationManagerCleanupAsserter) NoError(comment string, err error, failNow ...bool) {
+	s.svm.t.Helper()
+
+	failFast := FirstOrZero(failNow)
+
+	//svm.AssertNow(comment, IsNil{}, err)
+	if err != nil {
+		s.Log("Error was not nil (%s): %v", comment, err)
+		s.svm.isInvalid = true // Flip the failed flag
+
+		s.svm.t.Fail()
+		if failFast {
+			panic(CleanupStepEarlyExit)
+		}
+	}
+}
+
+func (s *ScenarioVariationManagerCleanupAsserter) Assert(comment string, assertion Assertion, items ...any) {
+	s.svm.t.Helper()
+
+	if !assertion.Assert(items...) {
+		if fa, ok := assertion.(FormattedAssertion); ok {
+			s.Log("Assertion %s failed: %s (%s)", fa.Name(), fa.Format(items...), comment)
+		} else {
+			s.Log("Assertion %s failed with items %v (%s)", assertion.Name(), items, comment)
+		}
+
+		s.svm.isInvalid = true // We've now failed, so we flip the shared bad flag
+		s.svm.t.Fail()
+	}
+}
+
+func (s *ScenarioVariationManagerCleanupAsserter) AssertNow(comment string, assertion Assertion, items ...any) {
+	s.svm.t.Helper()
+
+	if !assertion.Assert(items...) {
+		if fa, ok := assertion.(FormattedAssertion); ok {
+			s.Log("Assertion %s failed: %s (%s)", fa.Name(), fa.Format(items...), comment)
+		} else {
+			s.Log("Assertion %s failed with items %v (%s)", assertion.Name(), items, comment)
+		}
+
+		s.svm.isInvalid = true // We've now failed, so we flip the shared bad flag
+		s.svm.t.Fail()
+		panic(CleanupStepEarlyExit)
+	}
+}
+
+func (s *ScenarioVariationManagerCleanupAsserter) Error(reason string) {
+	s.svm.t.Helper()
+	s.Log("Failed cleanup step: %v", reason)
+	panic(CleanupStepEarlyExit)
+}
+
+func (s *ScenarioVariationManagerCleanupAsserter) Skip(reason string) {
+	s.svm.t.Helper()
+	s.Log("Cleanup step skipped: %v", reason)
+	panic(CleanupStepEarlyExit)
+}
+
+func (s *ScenarioVariationManagerCleanupAsserter) Log(format string, a ...any) {
+	s.svm.t.Helper()
+	s.svm.Log(format, a...)
+}
+
+func (s *ScenarioVariationManagerCleanupAsserter) Failed() bool {
+	return s.svm.Failed()
+}
+
+func (s *ScenarioVariationManagerCleanupAsserter) HelperMarker() HelperMarker {
+	return s.svm.HelperMarker()
 }

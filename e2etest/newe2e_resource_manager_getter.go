@@ -2,6 +2,7 @@ package e2etest
 
 import (
 	"fmt"
+
 	"github.com/Azure/azure-storage-azcopy/v10/common"
 )
 
@@ -15,13 +16,22 @@ type GetResourceOptions struct {
 // on *Local*, this inherently creates a container. But that's fine, because it's likely to be used.
 func GetRootResource(a Asserter, location common.Location, varOpts ...GetResourceOptions) ResourceManager {
 	opts := FirstOrZero(varOpts)
+	defaultacct := PrimaryStandardAcct
 
 	switch location {
 	case common.ELocation.Local():
+		if da, ok := a.(DryrunAsserter); ok && da.Dryrun() {
+			return &MockContainerResourceManager{overrideLocation: location.Local(), containerName: ""}
+		}
+
 		return NewLocalContainer(a)
-	case common.ELocation.Blob(), common.ELocation.BlobFS(), common.ELocation.File():
-		// acct handles the dryrun case for us
-		acct := GetAccount(a, DerefOrDefault(opts.PreferredAccount, PrimaryStandardAcct))
+	case common.ELocation.BlobFS():
+		// If we're trying to interact with blobfs we almost always want the hns account. test can specify if otherwise.
+		defaultacct = PrimaryHNSAcct
+
+		fallthrough // Continue to grab the account
+	case common.ELocation.Blob(), common.ELocation.File(), common.ELocation.FileNFS():
+		acct := GetAccount(a, DerefOrDefault(opts.PreferredAccount, defaultacct))
 		return acct.GetService(a, location)
 	default:
 		a.Error(fmt.Sprintf("TODO: Location %s is not yet supported", location))
