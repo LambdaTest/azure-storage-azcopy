@@ -23,7 +23,6 @@ package cmd
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"os"
 	"strconv"
 	"strings"
