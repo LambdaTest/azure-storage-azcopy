@@ -103,6 +103,7 @@ type IJobPartTransferMgr interface {
 	SuccessfulBytesTransferred() int64
 	TransferIndex() (partNum, transferIndex uint32)
 	RestartedTransfer() bool
+	GetJobErrorHandler() common.JobErrorHandler
 }
 
 // TransferInfo is a per path object that needs to be transferred
@@ -117,6 +118,7 @@ type TransferInfo struct {
 	PreservePermissions     common.PreservePermissionsOption
 	PreserveInfo            bool
 	PreservePOSIXProperties bool
+	PosixPropertiesStyle    common.PosixPropertiesStyle
 	BlobFSRecursiveDelete   bool
 
 	// Paths of targets excluding the container/fileshare name.
@@ -423,6 +425,7 @@ func (jptm *jobPartTransferMgr) Info() *TransferInfo {
 		PreservePermissions:            plan.PreservePermissions,
 		PreserveInfo:                   plan.PreserveInfo,
 		PreservePOSIXProperties:        plan.PreservePOSIXProperties,
+		PosixPropertiesStyle:           plan.PosixPropertiesStyle,
 		S2SGetPropertiesInBackend:      s2sGetPropertiesInBackend,
 		S2SSourceChangeValidation:      s2sSourceChangeValidation,
 		S2SInvalidMetadataHandleOption: s2sInvalidMetadataHandleOption,
@@ -867,7 +870,7 @@ func (jptm *jobPartTransferMgr) failActiveTransfer(typ transferErrorCode, descri
 			}
 
 			if fileerror.HasCode(err, "ShareSizeLimitReached") {
-				common.GetLifecycleMgr().Error("Increase the file share quota and call Resume command.")
+				jptm.GetJobErrorHandler().Error("Increase the file share quota and call Resume command.")
 			}
 
 			// and use the normal cancelling mechanism so that we can exit in a clean and controlled way
@@ -1049,4 +1052,8 @@ func (jptm *jobPartTransferMgr) ShouldInferContentType() bool {
 
 func (jptm *jobPartTransferMgr) SuccessfulBytesTransferred() int64 {
 	return atomic.LoadInt64(&jptm.atomicSuccessfulBytes)
+}
+
+func (jptm *jobPartTransferMgr) GetJobErrorHandler() common.JobErrorHandler {
+	return jptm.jobPartMgr.GetJobErrorHandler()
 }

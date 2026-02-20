@@ -61,6 +61,7 @@ const (
 	RECOMMENDED_OBJECTS_COUNT = 10000000
 	WARN_MULTIPLE_PROCESSES   = "More than one AzCopy process is running. This is a non-blocking warning, AzCopy will continue the operation. \n But, it is best practice to run a single process per VM." +
 		"\nPlease terminate other instances." // This particular warning message does not abort the whole operation
+	AMLFS_MOD_TIME_LAYOUT = "2006-01-02 15:04:05 -0700"
 )
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -385,45 +386,6 @@ func (o OverwriteOption) String() string {
 	return enum.StringInt(o, reflect.TypeOf(o))
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-type OutputFormat uint32
-
-var EOutputFormat = OutputFormat(0)
-
-func (OutputFormat) None() OutputFormat { return OutputFormat(0) }
-func (OutputFormat) Text() OutputFormat { return OutputFormat(1) }
-func (OutputFormat) Json() OutputFormat { return OutputFormat(2) }
-
-func (of *OutputFormat) Parse(s string) error {
-	val, err := enum.Parse(reflect.TypeOf(of), s, true)
-	if err == nil {
-		*of = val.(OutputFormat)
-	}
-	return err
-}
-
-func (of OutputFormat) String() string {
-	return enum.StringInt(of, reflect.TypeOf(of))
-}
-
-var EExitCode = ExitCode(0)
-
-type ExitCode uint32
-
-func (ExitCode) Success() ExitCode { return ExitCode(0) }
-func (ExitCode) Error() ExitCode   { return ExitCode(1) }
-
-// note: if AzCopy exits due to a panic, we don't directly control what the exit code will be. The Go runtime seems to be
-// hard-coded to give an exit code of 2 in that case, but there is discussion of changing it to 1, so it may become
-// impossible to tell from exit code alone whether AzCopy panic or return EExitCode.Error.
-// See https://groups.google.com/forum/#!topic/golang-nuts/u9NgKibJsKI
-// However, fortunately, in the panic case, stderr will get the panic message;
-// whereas AFAIK we never write to stderr in normal execution of AzCopy.  So that's a suggested way to differentiate when needed.
-
-// NoExit is used as a marker, to suppress the normal exit behaviour
-func (ExitCode) NoExit() ExitCode { return ExitCode(99) }
-
 // //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 type LogLevel uint8
 
@@ -692,6 +654,10 @@ func (l Location) SupportsTrailingDot() bool {
 	return false
 }
 
+func (ft FromTo) IsRedirection() bool {
+	return ft == EFromTo.PipeBlob() || ft == EFromTo.BlobPipe()
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 var EFromTo = FromTo(0)
@@ -710,20 +676,27 @@ func (FromTo) FileLocal() FromTo      { return FromToValue(ELocation.File(), ELo
 func (FromTo) BlobPipe() FromTo       { return FromToValue(ELocation.Blob(), ELocation.Pipe()) }
 func (FromTo) PipeBlob() FromTo       { return FromToValue(ELocation.Pipe(), ELocation.Blob()) }
 func (FromTo) FilePipe() FromTo       { return FromToValue(ELocation.File(), ELocation.Pipe()) }
+func (FromTo) FileSMBPipe() FromTo    { return FromToValue(ELocation.File(), ELocation.Pipe()) }
 func (FromTo) PipeFile() FromTo       { return FromToValue(ELocation.Pipe(), ELocation.File()) }
+func (FromTo) PipeFileSMB() FromTo    { return FromToValue(ELocation.Pipe(), ELocation.File()) }
 func (FromTo) BlobTrash() FromTo      { return FromToValue(ELocation.Blob(), ELocation.Unknown()) }
 func (FromTo) FileTrash() FromTo      { return FromToValue(ELocation.File(), ELocation.Unknown()) }
+func (FromTo) FileSMBTrash() FromTo   { return FromToValue(ELocation.File(), ELocation.Unknown()) }
 func (FromTo) BlobFSTrash() FromTo    { return FromToValue(ELocation.BlobFS(), ELocation.Unknown()) }
 func (FromTo) LocalBlobFS() FromTo    { return FromToValue(ELocation.Local(), ELocation.BlobFS()) }
 func (FromTo) BlobFSLocal() FromTo    { return FromToValue(ELocation.BlobFS(), ELocation.Local()) }
 func (FromTo) BlobFSBlobFS() FromTo   { return FromToValue(ELocation.BlobFS(), ELocation.BlobFS()) }
 func (FromTo) BlobFSBlob() FromTo     { return FromToValue(ELocation.BlobFS(), ELocation.Blob()) }
 func (FromTo) BlobFSFile() FromTo     { return FromToValue(ELocation.BlobFS(), ELocation.File()) }
+func (FromTo) BlobFSFileSMB() FromTo  { return FromToValue(ELocation.BlobFS(), ELocation.File()) }
 func (FromTo) BlobBlobFS() FromTo     { return FromToValue(ELocation.Blob(), ELocation.BlobFS()) }
 func (FromTo) FileBlobFS() FromTo     { return FromToValue(ELocation.File(), ELocation.BlobFS()) }
+func (FromTo) FileSMBBlobFS() FromTo  { return FromToValue(ELocation.File(), ELocation.BlobFS()) }
 func (FromTo) BlobBlob() FromTo       { return FromToValue(ELocation.Blob(), ELocation.Blob()) }
 func (FromTo) FileBlob() FromTo       { return FromToValue(ELocation.File(), ELocation.Blob()) }
+func (FromTo) FileSMBBlob() FromTo    { return FromToValue(ELocation.File(), ELocation.Blob()) }
 func (FromTo) BlobFile() FromTo       { return FromToValue(ELocation.Blob(), ELocation.File()) }
+func (FromTo) BlobFileSMB() FromTo    { return FromToValue(ELocation.Blob(), ELocation.File()) }
 func (FromTo) FileFile() FromTo       { return FromToValue(ELocation.File(), ELocation.File()) }
 func (FromTo) S3Blob() FromTo         { return FromToValue(ELocation.S3(), ELocation.Blob()) }
 func (FromTo) GCPBlob() FromTo        { return FromToValue(ELocation.GCP(), ELocation.Blob()) }
@@ -792,6 +765,10 @@ func (ft FromTo) IsDownload() bool {
 
 func (ft FromTo) IsS2S() bool {
 	return ft.From().IsRemote() && ft.To().IsRemote() && ft.To() != ELocation.None() && ft.To() != ELocation.Unknown()
+}
+
+func (ft FromTo) IsNFS() bool {
+	return ft.From() == ELocation.FileNFS() || ft.To() == ELocation.FileNFS()
 }
 
 func (ft FromTo) IsUpload() bool {
@@ -902,10 +879,13 @@ func (TransferStatus) Started() TransferStatus { return TransferStatus(1) }
 // Transfer successfully completed
 func (TransferStatus) Success() TransferStatus { return TransferStatus(2) }
 
-// Folder was created, but properties have not been persisted yet. Equivalent to Started, but never intended to be set on anything BUT folders.
+// FolderCreated folder was created, but properties have not been persisted yet. Equivalent to Started, but never intended to be set on anything BUT folders.
 func (TransferStatus) FolderCreated() TransferStatus { return TransferStatus(3) }
 
-func (TransferStatus) Restarted() TransferStatus { return TransferStatus(4) }
+// FolderExisted folder already existed before we got to it. A valid state to continue from in overwrite scenarios.
+func (TransferStatus) FolderExisted() TransferStatus { return TransferStatus(4) }
+
+func (TransferStatus) Restarted() TransferStatus { return TransferStatus(5) }
 
 // Transfer failed due to some error.
 func (TransferStatus) Failed() TransferStatus { return TransferStatus(-1) }
@@ -1074,28 +1054,6 @@ func (ct *CredentialType) Parse(s string) error {
 		*ct = val.(CredentialType)
 	}
 	return err
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-var EOutputVerbosity = OutputVerbosity(0)
-
-type OutputVerbosity uint8
-
-func (OutputVerbosity) Default() OutputVerbosity   { return OutputVerbosity(0) }
-func (OutputVerbosity) Essential() OutputVerbosity { return OutputVerbosity(1) } // no progress, no info, no prompts. Print everything else
-func (OutputVerbosity) Quiet() OutputVerbosity     { return OutputVerbosity(2) } // nothing at all
-
-func (qm *OutputVerbosity) Parse(s string) error {
-	val, err := enum.ParseInt(reflect.TypeOf(qm), s, true, true)
-	if err == nil {
-		*qm = val.(OutputVerbosity)
-	}
-	return err
-}
-
-func (qm OutputVerbosity) String() string {
-	return enum.StringInt(qm, reflect.TypeOf(qm))
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1583,12 +1541,18 @@ func (pc *PerfConstraint) Parse(s string) error {
 var EHardlinkHandlingType = HardlinkHandlingType(0)
 
 var DefaultHardlinkHandlingType = EHardlinkHandlingType.Follow()
+var SkipHardlinkHandlingType = EHardlinkHandlingType.Skip()
 
 type HardlinkHandlingType uint8
 
-// Copy means copy the files to the destination as regular files
+// Follow means copy the files to the destination as regular files
 func (HardlinkHandlingType) Follow() HardlinkHandlingType {
 	return HardlinkHandlingType(0)
+}
+
+// Skip means skip the hardlinks and do not copy them to the destination
+func (HardlinkHandlingType) Skip() HardlinkHandlingType {
+	return HardlinkHandlingType(1)
 }
 
 func (pho HardlinkHandlingType) String() string {
@@ -1805,9 +1769,9 @@ type CpkOptions struct {
 	IsSourceEncrypted bool
 }
 
-func (options CpkOptions) GetCPKInfo() *blob.CPKInfo {
+func (options CpkOptions) GetCPKInfo() (*blob.CPKInfo, error) {
 	if !options.IsSourceEncrypted {
-		return nil
+		return nil, nil
 	} else {
 		return GetCpkInfo(options.CpkInfo)
 	}
@@ -1930,7 +1894,7 @@ func (sht *SymlinkHandlingType) Determine(Follow, Preserve bool) error {
 	return nil
 }
 
-// /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 var oncer = sync.Once{}
 
@@ -1939,4 +1903,37 @@ func WarnIfTooManyObjects() {
 		GetLifecycleMgr().Warn(fmt.Sprintf("This job contains more than %d objects, best practice to run less than this.",
 			RECOMMENDED_OBJECTS_COUNT))
 	})
+}
+
+// //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+var EPosixPropertiesStyle = PosixPropertiesStyle(0)
+
+var StandardPosixPropertiesStyle = EPosixPropertiesStyle.Standard() // Default
+var AMLFSPosixPropertiesStyle = EPosixPropertiesStyle.AMLFS()
+
+type PosixPropertiesStyle uint8
+
+// Standard means use the default POSIX properties type
+func (PosixPropertiesStyle) Standard() PosixPropertiesStyle {
+	return PosixPropertiesStyle(0)
+}
+
+// AMLFS means use the Azure Managed Lustre File System POSIX attributes for owner, group ID, mode and modtime
+func (PosixPropertiesStyle) AMLFS() PosixPropertiesStyle {
+	return PosixPropertiesStyle(1)
+}
+
+func (ppt PosixPropertiesStyle) String() string {
+	return enum.StringInt(ppt, reflect.TypeOf(ppt))
+}
+
+func (ppt *PosixPropertiesStyle) Parse(s string) error {
+	if s == "" { // Default to standard when not set
+		s = StandardPosixPropertiesStyle.String()
+	}
+	val, err := enum.ParseInt(reflect.TypeOf(ppt), s, true, true)
+	if err == nil {
+		*ppt = val.(PosixPropertiesStyle)
+	}
+	return err
 }

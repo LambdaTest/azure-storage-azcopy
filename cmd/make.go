@@ -27,6 +27,8 @@ import (
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azdatalake"
+	"github.com/Azure/azure-storage-azcopy/v10/azcopy"
+	"github.com/Azure/azure-storage-azcopy/v10/traverser"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
@@ -62,7 +64,7 @@ func (raw rawMakeCmdArgs) cook() (cookedMakeCmdArgs, error) {
 	// resourceLocation could be unknown at this stage, it will be handled by the caller
 	return cookedMakeCmdArgs{
 		resourceURL:      *parsedURL,
-		resourceLocation: InferArgumentLocation(raw.resourceToCreate),
+		resourceLocation: azcopy.InferArgumentLocation(raw.resourceToCreate),
 		quota:            int32(raw.quota),
 	}, nil
 }
@@ -77,7 +79,7 @@ type cookedMakeCmdArgs struct {
 func (cookedArgs cookedMakeCmdArgs) process() (err error) {
 	ctx := context.WithValue(context.TODO(), ste.ServiceAPIVersionOverride, ste.DefaultServiceApiVersion)
 
-	resourceStringParts, err := SplitResourceString(cookedArgs.resourceURL.String(), cookedArgs.resourceLocation)
+	resourceStringParts, err := traverser.SplitResourceString(cookedArgs.resourceURL.String(), cookedArgs.resourceLocation)
 	if err != nil {
 		return err
 	}
@@ -98,7 +100,7 @@ func (cookedArgs cookedMakeCmdArgs) process() (err error) {
 	}
 
 	// Note : trailing dot is only applicable to file operations anyway, so setting this to false
-	options := createClientOptions(common.AzcopyCurrentJobLogger, nil, reauthTok)
+	options := traverser.CreateClientOptions(common.AzcopyCurrentJobLogger, nil, reauthTok)
 	resourceURL := cookedArgs.resourceURL.String()
 	cred := credentialInfo.OAuthTokenInfo.TokenCredential
 
@@ -209,9 +211,9 @@ func init() {
 				glcm.Error(err.Error())
 			}
 
-			glcm.Exit(func(format common.OutputFormat) string {
+			glcm.Exit(func(format OutputFormat) string {
 				return "Successfully created the resource."
-			}, common.EExitCode.Success())
+			}, EExitCode.Success())
 		},
 	}
 
