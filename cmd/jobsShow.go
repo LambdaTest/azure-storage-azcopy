@@ -23,8 +23,9 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	"github.com/Azure/azure-storage-azcopy/v10/azcopy"
 	"strings"
+
+	"github.com/Azure/azure-storage-azcopy/v10/azcopy"
 
 	"encoding/json"
 
@@ -59,7 +60,7 @@ func init() {
 		},
 		Run: func(cmd *cobra.Command, args []string) {
 			if commandLineInput.OfStatus == "" {
-				resp, err := Client.GetJobSummary(azcopy.GetJobSummaryOptions{JobID: commandLineInput.JobID})
+				resp, err := Client.GetJobSummary(commandLineInput.JobID, azcopy.GetJobSummaryOptions{})
 				if err != nil {
 					glcm.Error(err.Error())
 				}
@@ -72,13 +73,13 @@ func init() {
 				if err != nil {
 					glcm.Error(fmt.Sprintf("cannot parse the given Transfer Status %s", commandLineInput.OfStatus))
 				}
-				resp, err := Client.ListJobTransfers(azcopy.ListJobTransfersOptions{JobID: commandLineInput.JobID, WithStatus: &status})
+				resp, err := Client.ListJobTransfers(commandLineInput.JobID, azcopy.ListJobTransfersOptions{WithStatus: &status})
 				if err != nil {
 					glcm.Error(err.Error())
 				}
 				PrintJobTransfers(common.ListJobTransfersResponse(resp))
 			}
-			glcm.Exit(nil, common.EExitCode.Success())
+			glcm.Exit(nil, EExitCode.Success())
 		},
 	}
 
@@ -91,19 +92,19 @@ func init() {
 
 // PrintJobTransfers prints the response of listOrder command when list Order command requested the list of specific transfer of an existing job
 func PrintJobTransfers(listTransfersResponse common.ListJobTransfersResponse) {
-	if OutputFormat == common.EOutputFormat.Json() {
+	if outputFormat == EOutputFormat.Json() {
 		glcm.Output(
-			func(_ common.OutputFormat) string {
+			func(_ OutputFormat) string {
 				buf, err := json.Marshal(listTransfersResponse)
 				if err != nil {
 					panic(err)
 				}
 
 				return string(buf)
-			}, common.EOutputMessageType.ListJobTransfers())
+			}, EOutputMessageType.ListJobTransfers())
 	}
-	glcm.Exit(func(format common.OutputFormat) string {
-		if format == common.EOutputFormat.Json() {
+	glcm.Exit(func(format OutputFormat) string {
+		if format == EOutputFormat.Json() {
 			jsonOutput, err := json.Marshal(listTransfersResponse)
 			common.PanicIfErr(err)
 			return string(jsonOutput)
@@ -121,7 +122,7 @@ func PrintJobTransfers(listTransfersResponse common.ListJobTransfersResponse) {
 
 			return sb.String()
 		}
-	}, common.EExitCode.Success())
+	}, EExitCode.Success())
 }
 
 // PrintJobProgressSummary prints the response of listOrder command when listOrder command requested the progress summary of an existing job
@@ -129,19 +130,19 @@ func PrintJobProgressSummary(summary common.ListJobSummaryResponse) {
 	// Reset the bytes over the wire counter
 	summary.BytesOverWire = 0
 
-	if OutputFormat == common.EOutputFormat.Json() {
+	if outputFormat == EOutputFormat.Json() {
 		glcm.Output(
-			func(_ common.OutputFormat) string {
+			func(_ OutputFormat) string {
 				buf, err := json.Marshal(summary)
 				if err != nil {
 					panic(err)
 				}
 
 				return string(buf)
-			}, common.EOutputMessageType.GetJobSummary())
+			}, EOutputMessageType.GetJobSummary())
 	}
-	glcm.Exit(func(format common.OutputFormat) string {
-		if format == common.EOutputFormat.Json() {
+	glcm.Exit(func(format OutputFormat) string {
+		if format == EOutputFormat.Json() {
 			jsonOutput, err := json.Marshal(summary) // see note below re % complete being approximate. We can't include "approx" in the JSON.
 			common.PanicIfErr(err)
 			return string(jsonOutput)
@@ -179,5 +180,5 @@ Final Job Status: %v
 			summary.PercentComplete, // noted as approx in the format string because won't include in-flight files if this Show command is run from a different process
 			summary.JobStatus,
 		)
-	}, common.EExitCode.Success())
+	}, EExitCode.Success())
 }

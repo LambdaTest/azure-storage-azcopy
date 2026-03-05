@@ -6,16 +6,17 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Azure/azure-storage-azcopy/v10/azcopy"
 	"github.com/Azure/azure-storage-azcopy/v10/common"
 )
 
 func (cooked *CookedCopyCmdArgs) processArgs() (err error) {
 	cooked.jobID = Client.CurrentJobID
 	// set up the front end scanning logger
-	azcopyScanningLogger = common.NewJobLogger(Client.CurrentJobID, LogLevel, common.LogPathFolder, "-scanning")
-	azcopyScanningLogger.OpenLog()
+	common.AzcopyScanningLogger = common.NewJobLogger(Client.CurrentJobID, LogLevel, common.LogPathFolder, "-scanning")
+	common.AzcopyScanningLogger.OpenLog()
 	glcm.RegisterCloseFunc(func() {
-		azcopyScanningLogger.CloseLog()
+		common.AzcopyScanningLogger.CloseLog()
 	})
 
 	// if no logging, set this empty so that we don't display the log location
@@ -23,7 +24,7 @@ func (cooked *CookedCopyCmdArgs) processArgs() (err error) {
 		common.LogPathFolder = ""
 	}
 
-	cooked.putBlobSize, err = blockSizeInBytes(cooked.PutBlobSizeMB)
+	cooked.putBlobSize, err = azcopy.BlockSizeInBytes(cooked.PutBlobSizeMB)
 	if err != nil {
 		return err
 	}
@@ -54,7 +55,7 @@ func (cooked *CookedCopyCmdArgs) processArgs() (err error) {
 		addToChannel := func(v string, paramName string) {
 			// empty strings should be ignored, otherwise the source root itself is selected
 			if len(v) > 0 {
-				warnIfHasWildcard(includeWarningOncer, paramName, v)
+				azcopy.WarnIfHasWildcard(includeWarningOncer, paramName, v)
 				listChan <- v
 			}
 		}
@@ -166,10 +167,14 @@ func (cooked *CookedCopyCmdArgs) processArgs() (err error) {
 	}
 
 	if cooked.preserveInfo && !cooked.preservePermissions.IsTruthy() {
-		if common.IsNFSCopy() {
-			glcm.Info(PreserveNFSPermissionsDisabledMsg)
+		if cooked.FromTo.IsNFS() {
+			// Skip logging this msg for cross-protocol transfers
+			// because --preserve-permissions flag is not applicable.
+			if !(cooked.FromTo == common.EFromTo.FileSMBFileNFS() || cooked.FromTo == common.EFromTo.FileNFSFileSMB()) {
+				glcm.Info(azcopy.PreserveNFSPermissionsDisabledMsg)
+			}
 		} else {
-			glcm.Info(PreservePermissionsDisabledMsg)
+			glcm.Info(azcopy.PreservePermissionsDisabledMsg)
 		}
 	}
 

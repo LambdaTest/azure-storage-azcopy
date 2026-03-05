@@ -4,12 +4,10 @@ import (
 	"fmt"
 	"math/rand"
 
+	"github.com/Azure/azure-storage-azcopy/v10/azcopy"
 	"github.com/Azure/azure-storage-azcopy/v10/common"
 	"github.com/Azure/azure-storage-azcopy/v10/jobsAdmin"
 )
-
-var EnumerationParallelism = 1
-var EnumerationParallelStatFiles = false
 
 // addTransfer accepts a new transfer, if the threshold is reached, dispatch a job part order.
 func addTransfer(e *common.CopyJobPartOrderRequest, transfer common.CopyTransfer, cca *CookedCopyCmdArgs) error {
@@ -18,7 +16,7 @@ func addTransfer(e *common.CopyJobPartOrderRequest, transfer common.CopyTransfer
 	// dispatch the transfers once the number reaches NumOfFilesPerDispatchJobPart
 	// we do this so that in the case of large transfer, the transfer engine can get started
 	// while the frontend is still gathering more transfers
-	if len(e.Transfers.List) == NumOfFilesPerDispatchJobPart {
+	if len(e.Transfers.List) == azcopy.NumOfFilesPerDispatchJobPart {
 		shuffleTransfers(e.Transfers.List)
 		resp := jobsAdmin.ExecuteNewCopyJobPartOrder(*e)
 
@@ -74,20 +72,20 @@ func dispatchFinalPart(e *common.CopyJobPartOrderRequest, cca *CookedCopyCmdArgs
 		if common.LogPathFolder != "" {
 			logPathFolder = fmt.Sprintf("%s%s%s.log", common.LogPathFolder, common.OS_PATH_SEPARATOR, cca.jobID)
 		}
-		glcm.Init(common.GetStandardInitOutputBuilder(cca.jobID.String(), logPathFolder, cca.isCleanupJob, cca.cleanupJobMessage))
+		glcm.Init(GetStandardInitOutputBuilder(cca.jobID.String(), logPathFolder, cca.isCleanupJob, cca.cleanupJobMessage))
 
 		if cca.dryrunMode {
 			return nil
 		}
 
 		if resp.ErrorMsg == common.ECopyJobPartOrderErrorType.NoTransfersScheduledErr() {
-			return NothingScheduledError
+			return azcopy.NothingScheduledError
 		}
 
 		return fmt.Errorf("copy job part order with JobId %s and part number %d failed because %s", e.JobID, e.PartNum, resp.ErrorMsg)
 	}
 
-	common.LogToJobLogWithPrefix(FinalPartCreatedMessage, common.LogInfo)
+	common.LogToJobLogWithPrefix(azcopy.FinalPartCreatedMessage, common.LogInfo)
 
 	// set the flag on cca, to indicate the enumeration is done
 	cca.isEnumerationComplete = true
